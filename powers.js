@@ -523,11 +523,12 @@ export function createPowers(ctx) {
         .addScaledVector(_right, side * 0.35)
         .addScaledVector(_fwd, 0.5)
         .addScaledVector(UP, -0.25);
-      return { pos, vel: new THREE.Vector3(), grip: !!keys && keys.has('Space') };
+      return { pos, vel: new THREE.Vector3(), grip: !!keys && keys.has('Space'), dir: camera.getWorldDirection(new THREE.Vector3()) };
     }
-    if (pose) return { pos: pose.wrist, vel: pose.wristVel, grip: !!rig.pinching };
+    if (pose) return { pos: pose.wrist, vel: pose.wristVel, grip: !!rig.pinching, dir: pose.palmFwd };
     if (rig.connected) {
-      return { pos: rig.controller.getWorldPosition(new THREE.Vector3()), vel: rig.vel, grip: !!rig.pinching };
+      const dir = new THREE.Vector3(0, 0, -1).transformDirection(rig.controller.matrixWorld);
+      return { pos: rig.controller.getWorldPosition(new THREE.Vector3()), vel: rig.vel, grip: !!rig.pinching, dir };
     }
     return null;
   }

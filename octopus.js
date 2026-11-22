@@ -134,6 +134,7 @@ export function createOctopus({ scene, camera, player, bodies, gridTexture }) {
       elbow: new THREE.Vector3(),
       wrist: new THREE.Vector3(),
       clawTip: new THREE.Vector3(),
+      clawDir: new THREE.Vector3(0, 0, -1),   // where the claw points: the hand's fingers
       target: new THREE.Vector3(),
       smooth: new THREE.Vector3(),
       handVel: new THREE.Vector3(),
@@ -244,10 +245,17 @@ export function createOctopus({ scene, camera, player, bodies, gridTexture }) {
     _pole.copy(_right).multiplyScalar(arm.side * 1.0).addScaledVector(UP, -0.6).addScaledVector(_fwd, -0.2);
     solveTwoBone(arm.shoulder, arm.smooth, _pole, arm.elbow, arm.wrist);
 
-    // Claw continues the forearm
-    _claw.subVectors(arm.wrist, arm.elbow);
-    if (_claw.lengthSq() < 1e-6) _claw.copy(UP);
-    arm.clawTip.copy(arm.wrist).addScaledVector(_claw.normalize(), CLAW_LEN);
+    // Claw points where the hand points (fingers direction), smoothly
+    if (input && input.dir && input.dir.lengthSq() > 1e-6) {
+      arm.clawDir.lerp(input.dir, 1 - Math.exp(-FOLLOW_RATE * dt));
+    } else {
+      _claw.subVectors(arm.wrist, arm.elbow);
+      if (_claw.lengthSq() < 1e-6) _claw.copy(UP);
+      arm.clawDir.lerp(_claw.normalize(), 1 - Math.exp(-FOLLOW_RATE * dt));
+    }
+    if (arm.clawDir.lengthSq() < 1e-6) arm.clawDir.set(0, 0, -1);
+    arm.clawDir.normalize();
+    arm.clawTip.copy(arm.wrist).addScaledVector(arm.clawDir, CLAW_LEN);
 
     // Grip: rising edge grabs or plants, falling edge lets go
     const grip = !!(input && input.grip);
@@ -336,7 +344,7 @@ export function createOctopus({ scene, camera, player, bodies, gridTexture }) {
     _right.crossVectors(_fwd, UP).normalize();
   }
 
-  // Inputs: { left: { pos, vel, grip }, right: { pos, vel, grip } }
+  // Inputs: { left: { pos, vel, grip, dir }, right: { pos, vel, grip, dir } }
   function update(dt, time, inputs) {
     computeHeadFrame();
     for (const arm of arms) {
