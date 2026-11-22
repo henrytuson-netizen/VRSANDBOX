@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // ---------------------------------------------------------------------------
 // Renderer + XR
@@ -16,39 +15,87 @@ document.body.appendChild(renderer.domElement);
 document.body.appendChild(VRButton.createButton(renderer));
 
 // ---------------------------------------------------------------------------
-// Scene, camera, lights
+// Scene, camera, player rig
+// The camera and all XR input objects live under `player`, so moving or
+// turning the player moves the whole user (headset, hands, controllers).
 // ---------------------------------------------------------------------------
+const BACKGROUND = 0x1d2026;
+
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b0d12);
+scene.background = new THREE.Color(BACKGROUND);
+// Fog hides the edge of the floor and gives the grid an endless horizon.
+scene.fog = new THREE.Fog(BACKGROUND, 25, 140);
 
-const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 200);
-camera.position.set(0, 1.6, 1);
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 250);
+camera.position.set(0, 1.6, 0); // desktop eye height; XR overrides this with the headset pose
 
-// Desktop preview controls (ignored while in VR)
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0.8, -2);
-controls.update();
+const player = new THREE.Group();
+scene.add(player);
+player.add(camera);
 
-scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x202030, 1.2));
-const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x404050, 1.4));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
 sun.position.set(3, 6, 2);
 scene.add(sun);
 
 // ---------------------------------------------------------------------------
-// Floor + grid (1 m cells)
+// Unity-style default grid texture (procedural, no downloads).
+// Light grey tile with a darker seam line on every edge, so tiling produces
+// a grid line at each tile boundary.
 // ---------------------------------------------------------------------------
-const FLOOR_SIZE = 40;
+function makeGridTexture(repeat = 1) {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
 
+  ctx.fillStyle = '#c7c7c7';
+  ctx.fillRect(0, 0, size, size);
+
+  // Faint half-tile guides, like Unity's default grid
+  ctx.strokeStyle = '#b4b4b4';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(size / 2, 0); ctx.lineTo(size / 2, size);
+  ctx.moveTo(0, size / 2); ctx.lineTo(size, size / 2);
+  ctx.stroke();
+
+  // Seam border: 2px on each side of the edge, so 4px where tiles meet
+  ctx.strokeStyle = '#8c8c8c';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(0, 0, size, size);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  texture.repeat.set(repeat, repeat);
+  return texture;
+}
+
+// Shared texture for every object (one tile per UV unit, as in Unity)
+const objectGridTexture = makeGridTexture(1);
+
+// ---------------------------------------------------------------------------
+// Infinite floor
+// A large plane that follows the player, snapped to whole metres. With one
+// texture tile per metre and an even plane size, the grid lines stay fixed in
+// world space while the plane moves underneath. Fog fades the edge out.
+// ---------------------------------------------------------------------------
+const FLOOR_SIZE = 600; // even, so tile seams land on whole metres
+
+const floorTexture = makeGridTexture(FLOOR_SIZE);
 const floor = new THREE.Mesh(
   new THREE.PlaneGeometry(FLOOR_SIZE, FLOOR_SIZE),
-  new THREE.MeshBasicMaterial({ color: 0x10141c })
+  new THREE.MeshStandardMaterial({ map: floorTexture, roughness: 0.9, metalness: 0 })
 );
 floor.rotation.x = -Math.PI / 2;
-floor.position.y = -0.002;
 scene.add(floor);
 
-const grid = new THREE.GridHelper(FLOOR_SIZE, FLOOR_SIZE, 0x3ddc97, 0x1f5a45);
-scene.add(grid);
+function updateFloor() {
+  floor.position.set(Math.round(player.position.x), 0, Math.round(player.position.z));
+}
 
 // ---------------------------------------------------------------------------
 // Test objects
@@ -65,7 +112,12 @@ function makeObject({ geometry, color, x, z, scale = 1, isStatic = false }) {
   geometry.computeBoundingSphere();
 
   const height = (geometry.boundingBox.max.y - geometry.boundingBox.min.y) * scale;
-  const material = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.1 });
+  const material = new THREE.MeshStandardMaterial({
+    color,
+    map: objectGridTexture,
+    roughness: 0.5,
+    metalness: 0.1,
+  });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.scale.setScalar(scale);
   mesh.position.set(x, 0, z);
@@ -93,8 +145,8 @@ makeObject({ geometry: new THREE.OctahedronGeometry(0.2), color: 0xffa94d, x: -0
 makeObject({ geometry: new THREE.BoxGeometry(0.2, 0.2, 0.2), color: 0x3bc9db, x: 0.4, z: -2.4 });
 
 // Static scale references
-makeObject({ geometry: new THREE.BoxGeometry(1, 1, 1), color: 0x495057, x: 2.2, z: -2.2, isStatic: true });
-makeObject({ geometry: new THREE.BoxGeometry(0.3, 2, 0.3), color: 0x343a40, x: -2.4, z: -2.6, isStatic: true });
+makeObject({ geometry: new THREE.BoxGeometry(1, 1, 1), color: 0x9aa0a6, x: 2.2, z: -2.2, isStatic: true });
+makeObject({ geometry: new THREE.BoxGeometry(0.3, 2, 0.3), color: 0x6c757d, x: -2.4, z: -2.6, isStatic: true });
 
 const dynamicObjects = objects.filter((o) => !o.userData.isStatic);
 
@@ -105,10 +157,6 @@ function resetObjects() {
     obj.userData.vel.set(0, 0, 0);
   }
 }
-
-addEventListener('keydown', (e) => {
-  if (e.key === 'r' || e.key === 'R') resetObjects();
-});
 
 // ---------------------------------------------------------------------------
 // Physics-lite: gravity, floor bounce, friction
@@ -171,14 +219,14 @@ const jointGeometry = new THREE.SphereGeometry(1, 12, 8);
 const tmpWorld = new THREE.Vector3();
 const tmpB = new THREE.Vector3();
 
-const rigs = [0, 1].map((i) => {
+const hands = [0, 1].map((i) => {
   const color = i === 0 ? 0x4fc3ff : 0xff8a4f;
 
   const controller = renderer.xr.getController(i);
   const grip = renderer.xr.getControllerGrip(i);
   const hand = renderer.xr.getHand(i);
 
-  // Pointing ray
+  // Pointing ray (lines can't use the grid texture)
   const ray = new THREE.Line(
     rayGeometry,
     new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.6 })
@@ -188,12 +236,13 @@ const rigs = [0, 1].map((i) => {
   // Simple controller body
   const body = new THREE.Mesh(
     new THREE.CylinderGeometry(0.018, 0.018, 0.12, 12),
-    new THREE.MeshStandardMaterial({ color: 0x222831, roughness: 0.6 })
+    new THREE.MeshStandardMaterial({ color: 0xffffff, map: objectGridTexture, roughness: 0.6 })
   );
   body.rotation.x = Math.PI / 2;
   grip.add(body);
 
-  scene.add(controller, grip, hand);
+  // Input objects live under the player so they move with locomotion
+  player.add(controller, grip, hand);
 
   return {
     index: i,
@@ -213,14 +262,15 @@ const rigs = [0, 1].map((i) => {
 
 // Adds sphere markers to each hand joint (joints are created by three.js on
 // hand-tracking connect) and a LineSegments for bones.
-function buildHandVisuals(rig) {
-  const joints = rig.hand.joints;
+function buildHandVisuals(hand) {
+  const joints = hand.hand.joints;
   if (!joints || Object.keys(joints).length === 0) return;
 
   const material = new THREE.MeshStandardMaterial({
-    color: rig.color,
-    emissive: rig.color,
-    emissiveIntensity: 0.3,
+    color: hand.color,
+    map: objectGridTexture,
+    emissive: hand.color,
+    emissiveIntensity: 0.25,
     roughness: 0.4,
   });
 
@@ -231,28 +281,28 @@ function buildHandVisuals(rig) {
     joints[name].add(marker); // child inherits joint visibility from three.js
   }
 
-  rig.positions = new Float32Array(BONE_SEGMENTS.length * 6);
+  hand.positions = new Float32Array(BONE_SEGMENTS.length * 6);
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(rig.positions, 3));
-  rig.lines = new THREE.LineSegments(
+  geometry.setAttribute('position', new THREE.BufferAttribute(hand.positions, 3));
+  hand.lines = new THREE.LineSegments(
     geometry,
-    new THREE.LineBasicMaterial({ color: rig.color, transparent: true, opacity: 0.8 })
+    new THREE.LineBasicMaterial({ color: hand.color, transparent: true, opacity: 0.8 })
   );
-  rig.lines.frustumCulled = false;
-  scene.add(rig.lines);
+  hand.lines.frustumCulled = false;
+  scene.add(hand.lines);
 
-  rig.built = true;
+  hand.built = true;
 }
 
-function updateHandBones(rig) {
-  const joints = rig.hand.joints;
+function updateHandBones(hand) {
+  const joints = hand.hand.joints;
   const wrist = joints && joints.wrist;
-  if (!wrist || !rig.lines) return;
+  if (!wrist || !hand.lines) return;
 
-  rig.lines.visible = wrist.visible;
+  hand.lines.visible = wrist.visible;
   if (!wrist.visible) return;
 
-  const pos = rig.positions;
+  const pos = hand.positions;
   for (let s = 0; s < BONE_SEGMENTS.length; s++) {
     const [a, b] = BONE_SEGMENTS[s];
     const ja = joints[a];
@@ -267,7 +317,7 @@ function updateHandBones(rig) {
       pos[o + 3] = tmpWorld.x; pos[o + 4] = tmpWorld.y; pos[o + 5] = tmpWorld.z;
     }
   }
-  rig.lines.geometry.attributes.position.needsUpdate = true;
+  hand.lines.geometry.attributes.position.needsUpdate = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,13 +336,13 @@ function setRayFromController(controller) {
   raycaster.ray.direction.copy(rayDir);
 }
 
-function grab(rig) {
-  if (rig.held) return;
+function grab(hand) {
+  if (hand.held) return;
 
   let target = null;
 
   // 1. Ray hit
-  setRayFromController(rig.controller);
+  setRayFromController(hand.controller);
   const hit = raycaster.intersectObjects(objects, false)[0];
   if (hit && !hit.object.userData.isStatic) {
     target = hit.object;
@@ -300,7 +350,7 @@ function grab(rig) {
 
   // 2. Proximity fallback (useful for hands)
   if (!target) {
-    rig.controller.getWorldPosition(tmpWorld);
+    hand.controller.getWorldPosition(tmpWorld);
     let best = 0.15;
     for (const obj of dynamicObjects) {
       tmpB.copy(obj.userData.center);
@@ -315,29 +365,151 @@ function grab(rig) {
 
   if (!target) return;
 
-  rig.held = target;
+  hand.held = target;
   target.userData.held = true;
   target.userData.vel.set(0, 0, 0);
-  rig.controller.attach(target); // keeps world transform
+  hand.controller.attach(target); // keeps world transform
 }
 
-function release(rig) {
-  const obj = rig.held;
+function release(hand) {
+  const obj = hand.held;
   if (!obj) return;
 
-  rig.held = null;
+  hand.held = null;
   scene.attach(obj); // back to scene, keeps world transform
   obj.userData.held = false;
 
   // Throw with the hand's recent velocity (clamped)
-  obj.userData.vel.copy(rig.vel);
+  obj.userData.vel.copy(hand.vel);
   if (obj.userData.vel.length() > 8) obj.userData.vel.setLength(8);
 }
 
-rigs.forEach((rig) => {
-  rig.controller.addEventListener('selectstart', () => grab(rig));
-  rig.controller.addEventListener('selectend', () => release(rig));
+hands.forEach((hand) => {
+  hand.controller.addEventListener('selectstart', () => grab(hand));
+  hand.controller.addEventListener('selectend', () => release(hand));
 });
+
+// ---------------------------------------------------------------------------
+// Movement
+//   Desktop: WASD / arrows to walk (Shift to run), Q/E to turn,
+//            left-drag to look, R to reset objects.
+//   VR:      left stick to walk (relative to head yaw), right stick to turn.
+// ---------------------------------------------------------------------------
+const WALK_SPEED = 2.5;
+const RUN_SPEED = 5;
+const DESKTOP_TURN_SPEED = 1.7; // rad/s
+const STICK_TURN_SPEED = 1.7;   // rad/s, smooth turn
+const DEADZONE = 0.15;
+
+const keys = new Set();
+let pitch = 0;
+let dragging = false;
+let lastX = 0;
+let lastY = 0;
+
+addEventListener('keydown', (e) => {
+  keys.add(e.code);
+  if (e.code === 'KeyR') resetObjects();
+});
+addEventListener('keyup', (e) => keys.delete(e.code));
+addEventListener('blur', () => keys.clear());
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  dragging = true;
+  lastX = e.clientX;
+  lastY = e.clientY;
+});
+addEventListener('pointerup', () => { dragging = false; });
+addEventListener('pointermove', (e) => {
+  if (!dragging || renderer.xr.isPresenting) return;
+  player.rotation.y -= (e.clientX - lastX) * 0.0045;
+  pitch = THREE.MathUtils.clamp(pitch - (e.clientY - lastY) * 0.0045, -1.4, 1.4);
+  camera.rotation.x = pitch;
+  lastX = e.clientX;
+  lastY = e.clientY;
+});
+
+function applyDeadzone(v) {
+  if (Math.abs(v) < DEADZONE) return 0;
+  return Math.sign(v) * (Math.abs(v) - DEADZONE) / (1 - DEADZONE);
+}
+
+// Reads thumbsticks from the XR session. Left = move, right = turn.
+// Quest/most controllers expose sticks on axes[2]/[3]; fall back to [0]/[1].
+function readXRSticks() {
+  const sticks = { left: { x: 0, y: 0 }, right: { x: 0, y: 0 } };
+  const session = renderer.xr.getSession();
+  if (!session) return sticks;
+
+  for (const source of session.inputSources) {
+    const gp = source.gamepad;
+    if (!gp || !source.handedness) continue;
+    const a = gp.axes;
+    const x = a.length >= 4 ? a[2] : a[0] || 0;
+    const y = a.length >= 4 ? a[3] : a[1] || 0;
+    if (source.handedness === 'left') sticks.left = { x, y };
+    if (source.handedness === 'right') sticks.right = { x, y };
+  }
+  return sticks;
+}
+
+const moveForward = new THREE.Vector3();
+const moveRight = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0);
+const moveDelta = new THREE.Vector3();
+
+// Compute forward/right from the head's yaw (flattened to the ground plane)
+function updateHeadingVectors() {
+  camera.updateWorldMatrix(true, false);
+  camera.getWorldDirection(moveForward);
+  moveForward.y = 0;
+  if (moveForward.lengthSq() < 1e-6) moveForward.set(0, 0, -1);
+  moveForward.normalize();
+  moveRight.crossVectors(moveForward, UP).normalize();
+}
+
+function updateMovement(dt) {
+  if (dt <= 0) return;
+
+  let strafe = 0;   // -1 left .. +1 right
+  let forward = 0;  // -1 back  .. +1 forward
+  let turn = 0;     // -1 left  .. +1 right
+  let speed = WALK_SPEED;
+
+  if (renderer.xr.isPresenting) {
+    const { left, right } = readXRSticks();
+    strafe = applyDeadzone(left.x);
+    forward = -applyDeadzone(left.y); // pushing the stick forward gives negative y
+    turn = applyDeadzone(right.x);
+  } else {
+    if (keys.has('KeyW') || keys.has('ArrowUp')) forward += 1;
+    if (keys.has('KeyS') || keys.has('ArrowDown')) forward -= 1;
+    if (keys.has('KeyD') || keys.has('ArrowRight')) strafe += 1;
+    if (keys.has('KeyA') || keys.has('ArrowLeft')) strafe -= 1;
+    if (keys.has('KeyE')) turn += 1;
+    if (keys.has('KeyQ')) turn -= 1;
+    if (keys.has('ShiftLeft') || keys.has('ShiftRight')) speed = RUN_SPEED;
+  }
+
+  // Normalise diagonals so they aren't faster
+  const mag = Math.hypot(strafe, forward);
+  if (mag > 1) {
+    strafe /= mag;
+    forward /= mag;
+  }
+
+  if (turn !== 0) {
+    player.rotation.y -= turn * (renderer.xr.isPresenting ? STICK_TURN_SPEED : DESKTOP_TURN_SPEED) * dt;
+  }
+
+  if (strafe !== 0 || forward !== 0) {
+    updateHeadingVectors();
+    moveDelta.set(0, 0, 0)
+      .addScaledVector(moveForward, forward)
+      .addScaledVector(moveRight, strafe);
+    player.position.addScaledVector(moveDelta, speed * dt);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Loop
@@ -347,20 +519,21 @@ const clock = new THREE.Clock();
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  if (!renderer.xr.isPresenting) controls.update();
+  updateMovement(dt);
+  updateFloor();
 
-  for (const rig of rigs) {
-    // Track hand velocity for throwing
-    rig.controller.getWorldPosition(tmpWorld);
-    if (rig.hasPrev && dt > 0) {
-      tmpB.copy(tmpWorld).sub(rig.prev).divideScalar(dt);
-      rig.vel.lerp(tmpB, 0.5);
+  for (const hand of hands) {
+    // Track hand velocity for throwing (world space)
+    hand.controller.getWorldPosition(tmpWorld);
+    if (hand.hasPrev && dt > 0) {
+      tmpB.copy(tmpWorld).sub(hand.prev).divideScalar(dt);
+      hand.vel.lerp(tmpB, 0.5);
     }
-    rig.prev.copy(tmpWorld);
-    rig.hasPrev = true;
+    hand.prev.copy(tmpWorld);
+    hand.hasPrev = true;
 
-    if (!rig.built) buildHandVisuals(rig);
-    if (rig.built) updateHandBones(rig);
+    if (!hand.built) buildHandVisuals(hand);
+    if (hand.built) updateHandBones(hand);
   }
 
   updatePhysics(dt);
