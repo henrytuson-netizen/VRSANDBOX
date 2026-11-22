@@ -3,6 +3,7 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { createPowers } from './powers.js';
 import { createTools } from './tools.js';
 import { createCommandMenu } from './menu.js';
+import { createAmbience } from './ambience.js';
 
 // ---------------------------------------------------------------------------
 // Renderer + XR
@@ -35,7 +36,8 @@ const player = new THREE.Group();
 scene.add(player);
 player.add(camera);
 
-scene.add(new THREE.HemisphereLight(0xffffff, 0x404050, 1.4));
+const hemi = new THREE.HemisphereLight(0xffffff, 0x404050, 1.4);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 1.2);
 sun.position.set(3, 6, 2);
 scene.add(sun);
@@ -1095,6 +1097,9 @@ const tools = createTools({
 });
 scene.add(tools.group);
 
+// Living world: motes, hand wakes and floor ripples, always moving (see ambience.js)
+const ambience = createAmbience({ scene, player, hands, hemi });
+
 // Hand command menu (see menu.js)
 function conjureAhead() {
   const fwd = camera.getWorldDirection(new THREE.Vector3());
@@ -1220,6 +1225,7 @@ function animate() {
   powers.update(dt);
   tools.update(dt);
   menu.update(dt);
+  ambience.update(dt, elapsed);
   checkClapReset(dt);
 
   // Build the list of colliders for this frame
