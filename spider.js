@@ -6,10 +6,10 @@ import * as THREE from 'three';
 // gather are switched off, so their gestures can't fire by accident.
 //
 //   Spider-Sense : always on (bullet time, see spidersense.js).
-//   Web Shot     : RIGHT gun pose (thumb and index out, other fingers curled),
-//                  held for a moment. A web line goes to whatever it aims at.
-//   Web Swing    : while attached, you swing like a pendulum. Open your LEFT
-//                  palm to let go.
+//   Web Shot     : a gun pose (thumb and index out, other fingers curled),
+//                  held briefly, fires a web from that hand. LEFT or RIGHT.
+//   Web Swing    : each web is a rope. Swing on one or both at once.
+//                  Open a palm to let go of that hand's web.
 //   Web Trap     : RIGHT fist flicked forward. A web ball pins the first
 //                  object it hits for a few seconds.
 // ---------------------------------------------------------------------------
@@ -18,6 +18,7 @@ const SHOT_RANGE = 25;          // m
 const SHOT_HOLD = 0.2;          // s the gun pose must be held
 const SWING_GRAVITY = 9.8;
 const SWING_DAMP = 0.02;        // per second, a little air drag
+const CONSTRAINT_PASSES = 4;    // rope solver iterations per frame
 const BALL_SPEED = 16;          // m/s
 const BALL_LIFE = 1.5;          // s
 const TRAP_TIME = 6;            // s a pinned object stays stuck
@@ -42,24 +43,26 @@ function openPose(p) {
 }
 
 export function createSpider({ scene, player, camera, bodies }) {
-  let attached = null;            // { anchor: Vector3, body: body|null, length }
-  let swingVel = new THREE.Vector3();
-  let shotHold = 0;
-  let shotCooldown = 0;
+  // One web per hand: { side, anchor, body, length, line }
+  const webs = [];
+  const swingVel = new THREE.Vector3();
+  const shotHold = { left: 0, right: 0 };
+  const shotCooldown = { left: 0, right: 0 };
   const balls = [];
   const trapped = new Map();      // body -> seconds left
   let flickCooldown = 0;
 
-  // Web line from the right hand to the anchor
-  const lineGeometry = new THREE.BufferGeometry();
-  lineGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
-  const line = new THREE.Line(lineGeometry, new THREE.LineBasicMaterial({ color: 0xffffff }));
-  line.visible = false;
-  line.frustumCulled = false;
-  scene.add(line);
-
   const ballGeometry = new THREE.SphereGeometry(0.06, 12, 8);
   const ballMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
+  function makeLine() {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+    const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: 0xffffff }));
+    line.frustumCulled = false;
+    scene.add(line);
+    return line;
+  }
 
   function aimShot(pose) {
     // Nearest body along the index finger, otherwise a point far out along it
@@ -81,80 +84,95 @@ export function createSpider({ scene, player, camera, bodies }) {
     return { anchor: pose.idxTip.clone().addScaledVector(pose.indexDir, SHOT_RANGE * 0.6), body: null };
   }
 
-  function beginSwing(target) {
-    attached = { anchor: target.anchor, body: target.body };
+  function shoot(side, pose) {
+    const target = aimShot(pose);
+    // Replace any web already on this hand
+    releaseWeb(side);
     const head = _h.copy(player.position);
     head.y += 1.6;
-    attached.length = Math.max(1, head.distanceTo(attached.anchor));
-    swingVel.set(0, 0, 0);
+    const web = { side, anchor: target.anchor, body: target.body, length: Math.max(1, head.distanceTo(target.anchor)), line: makeLine() };
+    webs.push(web);
   }
 
-  function endSwing() {
-    if (!attached) return;
-    // Keep the swing's momentum when you let go
-    attached = null;
-    line.visible = false;
+  function releaseWeb(side) {
+    for (let i = webs.length - 1; i >= 0; i--) {
+      if (webs[i].side !== side) continue;
+      scene.remove(webs[i].line);
+      webs.splice(i, 1);
+    }
   }
 
   function updateSwing(dt) {
-    const head = _h.copy(player.position);
-    head.y += 1.6;
-    if (attached.body) attached.anchor.copy(attached.body.center);
-    const L = attached.length;
-    // Gravity along the swing, then a constraint that keeps you on the rope
+    // Gravity and drag on the body
     swingVel.y -= SWING_GRAVITY * dt;
     swingVel.multiplyScalar(Math.exp(-SWING_DAMP * dt));
     player.position.addScaledVector(swingVel, dt);
 
-    head.copy(player.position).add(_d.set(0, 1.6, 0));
-    _a.subVectors(head, attached.anchor);
-    const dist = _a.length();
-    if (dist > 1e-4) {
-      _a.divideScalar(dist);
-      // Pull back onto the rope, removing outward speed
-      player.position.addScaledVector(_a, L - dist);
+    // Keep the body on every rope: push back to each rope's length, a few passes
+    for (let pass = 0; pass < CONSTRAINT_PASSES; pass++) {
+      for (const web of webs) {
+        if (web.body) web.anchor.copy(web.body.center);
+        _h.copy(player.position);
+        _h.y += 1.6;
+        _a.subVectors(_h, web.anchor);
+        const dist = _a.length();
+        if (dist < 1e-4) continue;
+        _a.divideScalar(dist);
+        player.position.addScaledVector(_a, (web.length - dist) / webs.length);
+      }
+    }
+    // Remove outward speed along each rope
+    for (const web of webs) {
+      _h.copy(player.position);
+      _h.y += 1.6;
+      _a.subVectors(_h, web.anchor).normalize();
       const outward = swingVel.dot(_a);
       if (outward > 0) swingVel.addScaledVector(_a, -outward);
     }
+
     if (player.position.y < 0) {
       player.position.y = 0;
       if (swingVel.y < 0) swingVel.y = 0;
     }
-    line.geometry.attributes.position.array[0] = head.x;
-    line.geometry.attributes.position.array[1] = head.y;
-    line.geometry.attributes.position.array[2] = head.z;
-    line.geometry.attributes.position.array[3] = attached.anchor.x;
-    line.geometry.attributes.position.array[4] = attached.anchor.y;
-    line.geometry.attributes.position.array[5] = attached.anchor.z;
-    line.geometry.attributes.position.needsUpdate = true;
+
+    // Draw each rope from the hand's side of the body to its anchor
+    for (const web of webs) {
+      _h.copy(player.position);
+      _h.y += 1.6;
+      const arr = web.line.geometry.attributes.position.array;
+      arr[0] = _h.x; arr[1] = _h.y; arr[2] = _h.z;
+      arr[3] = web.anchor.x; arr[4] = web.anchor.y; arr[5] = web.anchor.z;
+      web.line.geometry.attributes.position.needsUpdate = true;
+    }
   }
 
   // Called once per frame by powers.js while Spider is equipped
   function update(dt, worldDt, left, right, blocked) {
-    shotCooldown = Math.max(0, shotCooldown - dt);
     flickCooldown = Math.max(0, flickCooldown - dt);
 
-    // Web Shot: gun pose held briefly, nothing blocking it
-    if (right && gunPose(right) && !blocked && !attached && shotCooldown === 0) {
-      shotHold += dt;
-      if (shotHold >= SHOT_HOLD) {
-        shotHold = 0;
-        shotCooldown = 0.6;
-        beginSwing(aimShot(right));
-        line.visible = true;
+    // Web Shot: a gun pose held briefly fires a web from that hand
+    for (const side of ['left', 'right']) {
+      const pose = side === 'left' ? left : right;
+      shotCooldown[side] = Math.max(0, shotCooldown[side] - dt);
+      if (pose && gunPose(pose) && !blocked && shotCooldown[side] === 0) {
+        shotHold[side] += dt;
+        if (shotHold[side] >= SHOT_HOLD) {
+          shotHold[side] = 0;
+          shotCooldown[side] = 0.6;
+          shoot(side, pose);
+        }
+      } else {
+        shotHold[side] = 0;
       }
-    } else {
-      shotHold = 0;
+
+      // Open palm on that hand lets go of its web
+      if (pose && openPose(pose) && webs.some((w) => w.side === side)) {
+        releaseWeb(side);
+      }
     }
 
-    // Web Swing: release with the left open palm
-    if (attached) {
-      if (left && openPose(left)) {
-        endSwing();
-      } else {
-        updateSwing(dt);
-      }
-    }
+    // Swing while any web is attached
+    if (webs.length > 0) updateSwing(dt);
 
     // Web Trap: right fist flicked forward throws a web ball
     if (right && fistPose(right) && flickCooldown === 0 && !blocked) {
@@ -211,9 +229,10 @@ export function createSpider({ scene, player, camera, bodies }) {
 
   return {
     update,
-    isSwinging: () => !!attached,
+    isSwinging: () => webs.length > 0,
     reset() {
-      if (attached) endSwing();
+      for (const web of [...webs]) releaseWeb(web.side);
+      swingVel.set(0, 0, 0);
       for (const ball of balls) scene.remove(ball.mesh);
       balls.length = 0;
       for (const [b] of trapped) {
