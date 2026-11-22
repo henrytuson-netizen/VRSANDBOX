@@ -1030,6 +1030,11 @@ const powers = createPowers({
   cancelHandGrab: (rig) => onGrabEnd(rig),
 });
 
+// Test hook for automated checks (read-only use)
+window.__sandbox = { player, bodies, camera };
+
+const MAX_HAND_SPEED = 10; // m/s; faster than this is treated as a tracking jump
+
 const clock = new THREE.Clock();
 let elapsed = 0;
 let physicsAccumulator = 0;
@@ -1046,7 +1051,14 @@ function animate() {
     rig.controller.getWorldPosition(tmpWorld);
     if (rig.hasPrev && dt > 0) {
       tmpB.copy(tmpWorld).sub(rig.prevPos).divideScalar(dt);
-      rig.vel.lerp(tmpB, 0.5);
+      // A hand that appears, vanishes or re-acquires far away is a jump, not a swing
+      if (tmpB.length() > MAX_HAND_SPEED) {
+        rig.vel.set(0, 0, 0);
+      } else {
+        rig.vel.lerp(tmpB, 0.5);
+      }
+    } else {
+      rig.vel.set(0, 0, 0);
     }
     rig.prevPos.copy(tmpWorld);
     rig.hasPrev = true;
