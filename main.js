@@ -4,6 +4,7 @@ import { createPowers } from './powers.js';
 import { createTools } from './tools.js';
 import { createCommandMenu } from './menu.js';
 import { createAmbience } from './ambience.js';
+import { createSpiderSense } from './spidersense.js';
 
 // ---------------------------------------------------------------------------
 // Renderer + XR
@@ -809,7 +810,8 @@ function onGrabEnd(rig) {
   b.zoom = null;
   b.invMass = 1 / b.mass;
 
-  // Throw with the hand's recent velocity (clamped)
+  // Throw with the hand's recent velocity (clamped). Stamp it so spider-sense ignores your own throws.
+  b.releasedAt = performance.now() / 1000;
   b.vel.copy(rig.vel);
   if (b.vel.length() > 8) b.vel.setLength(8);
 }
@@ -1097,6 +1099,13 @@ const tools = createTools({
 });
 scene.add(tools.group);
 
+// Spider-Sense bullet time (see spidersense.js)
+const spiderSense = createSpiderSense({
+  bodies,
+  camera,
+  isEnabled: () => !!powers.equipped && powers.equipped.id === 'spidersense',
+});
+
 // Living world: motes, hand wakes and floor ripples, always moving (see ambience.js)
 const ambience = createAmbience({ scene, player, hands, hemi });
 
@@ -1191,7 +1200,7 @@ function updateRewind(dt) {
 // so slow motion and time warp only change the world around you.
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
-  const worldDt = dt * timeScale;
+  const worldDt = dt * timeScale * spiderSense.update(dt);
   elapsed += worldDt;
 
   updateMovement(dt);

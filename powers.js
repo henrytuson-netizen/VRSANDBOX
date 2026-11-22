@@ -26,6 +26,7 @@ const WHEEL_STEP = (Math.PI * 2) / WHEEL_SLOTS;
 export const POWERS = [
   { id: 'octopus', name: 'Doctor Octopus', color: 0x8e44ad },
   { id: 'superfly', name: 'Superfly', color: 0x2e86de },
+  { id: 'spidersense', name: 'Spider-Sense', color: 0xe03131 },
 ];
 
 const CURL_RATIO = 1.6;          // tip-to-wrist / metacarpal-to-wrist; above = extended
