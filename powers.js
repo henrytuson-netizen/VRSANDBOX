@@ -319,7 +319,7 @@ export function createPowers(ctx) {
   }
 
   // ----- Doctor Octopus (robotic arms, see octopus.js) ----------------------
-  const octopus = createOctopus({ scene, player, bodies, gridTexture });
+  const octopus = createOctopus({ scene, camera, player, bodies, gridTexture });
 
   // ----- Superfly ---------------------------------------------------------
   const flyDir = new THREE.Vector3();

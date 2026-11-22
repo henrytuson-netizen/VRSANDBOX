@@ -16,28 +16,32 @@ import * as THREE from 'three';
 
 const UP = new THREE.Vector3(0, 1, 0);
 
-const LINKS = 10;
-const LINK_LEN = 0.8;                       // m, each link
-const MAX_REACH = LINKS * LINK_LEN;         // 8 m
-const MIRROR_GAIN = 5;                      // hand offset from shoulder is scaled by this
+const LINKS = 12;
+const LINK_LEN = 0.5;                       // m, each link
+const MAX_REACH = LINKS * LINK_LEN;         // 6 m
+const MIRROR_GAIN = 2.5;                    // hand offset from shoulder is scaled by this
+const FOLLOW_RATE = 12;                     // how quickly arms follow their target (per second)
 const GRAB_RANGE = 0.8;                     // m from tip to object surface
 const PLANT_HEIGHT = 0.6;                   // tip below this height can plant on the floor
-const LIFT_GAIN = 2.5;
-const MAX_LIFT_SPEED = 6;
-const WINCH_GAIN = 1.8;
-const MAX_WINCH_SPEED = 7;
+const LIFT_GAIN = 1.0;
+const MAX_LIFT_SPEED = 2.5;
+const WINCH_GAIN = 0.8;
+const MAX_WINCH_SPEED = 2.5;
 const GRAVITY = 9.8;
 const MAX_PLAYER_HEIGHT = 60;
-const RADIUS_BASE = 0.22;                   // thick at the shoulder
-const RADIUS_TIP = 0.09;                    // thin at the tip
-const SHOULDER_HALF_WIDTH = 0.22;
-const SHOULDER_HEIGHT = 1.35;
+const RADIUS_BASE = 0.07;                   // thick at the shoulder
+const RADIUS_TIP = 0.025;                   // thin at the tip
+const SHOULDER_HALF_WIDTH = 0.2;            // from the head's centre line
+const SHOULDER_DROP = 0.3;                  // shoulders sit this far below the head
 
 const _t = new THREE.Vector3();
 const _mid = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 const _h = new THREE.Vector3();
 const _pull = new THREE.Vector3();
+const _head = new THREE.Vector3();
+const _fwd = new THREE.Vector3();
+const _right = new THREE.Vector3();
 
 function safeNormalize(v, fallback) {
   const len = v.length();
@@ -73,7 +77,7 @@ function solveChain(points, base, target) {
   }
 }
 
-export function createOctopus({ scene, player, bodies, gridTexture }) {
+export function createOctopus({ scene, camera, player, bodies, gridTexture }) {
   const armMaterial = new THREE.MeshStandardMaterial({
     color: 0x3a3f4b,
     map: gridTexture,
@@ -119,6 +123,7 @@ export function createOctopus({ scene, player, bodies, gridTexture }) {
       points: Array.from({ length: LINKS + 1 }, () => new THREE.Vector3()),
       shoulder: new THREE.Vector3(),
       target: new THREE.Vector3(),
+      smooth: new THREE.Vector3(),
       tip: new THREE.Vector3(),
       handVel: new THREE.Vector3(),
       handPrev: new THREE.Vector3(),
@@ -191,37 +196,35 @@ export function createOctopus({ scene, player, bodies, gridTexture }) {
       return;
     }
 
-    // Shoulder sits on the player's torso, in world space
-    player.updateWorldMatrix(true, false);
-    arm.shoulder.set(arm.side * SHOULDER_HALF_WIDTH, SHOULDER_HEIGHT, 0);
-    player.localToWorld(arm.shoulder);
+    // Shoulder sits below the head, out to the side, in world space
+    arm.shoulder.copy(_head).addScaledVector(UP, -SHOULDER_DROP).addScaledVector(_right, arm.side * SHOULDER_HALF_WIDTH);
 
-    // Hand velocity and mirrored target
+    // Target: mirror the hand, relative to the shoulder, with reach capped
     const hasHand = !!(input && input.pos);
     if (hasHand) {
-      if (arm.hasPrev && dt > 0) {
-        arm.handVel.copy(input.vel);
-      }
+      if (arm.hasPrev && dt > 0) arm.handVel.copy(input.vel);
       arm.handPrev.copy(input.pos);
       arm.hasPrev = true;
       _t.subVectors(input.pos, arm.shoulder).multiplyScalar(MIRROR_GAIN);
+      if (_t.length() > MAX_REACH * 0.9) _t.setLength(MAX_REACH * 0.9);
       arm.target.copy(arm.shoulder).add(_t);
     } else {
-      // No hand: rest the arm out in front of the player
+      // No hand: the arm hangs relaxed, slightly out and forward
       arm.handVel.set(0, 0, 0);
       arm.hasPrev = false;
-      _dir.set(0, 0, -1).transformDirection(player.matrixWorld);
-      arm.target.copy(arm.shoulder).addScaledVector(_dir, 2).add(_t.set(0, -0.6, 0));
+      arm.target.copy(arm.shoulder).addScaledVector(_right, arm.side * 0.15).addScaledVector(_fwd, 0.35).addScaledVector(UP, -0.6);
     }
 
-    if (arm.anchor) arm.target.copy(arm.anchor);
-
-    // Pose the chain
+    // Smooth the target so the arm glides instead of jittering
     if (!arm.initialised) {
+      arm.smooth.copy(arm.target);
       arm.points.forEach((p) => p.copy(arm.shoulder));
       arm.initialised = true;
     }
-    solveChain(arm.points, arm.shoulder, arm.target);
+    arm.smooth.lerp(arm.target, 1 - Math.exp(-FOLLOW_RATE * dt));
+    if (arm.anchor) arm.smooth.copy(arm.anchor);
+
+    solveChain(arm.points, arm.shoulder, arm.smooth);
     arm.tip.copy(arm.points[LINKS]);
 
     // Grip: rising edge grabs or plants, falling edge lets go
@@ -311,7 +314,17 @@ export function createOctopus({ scene, player, bodies, gridTexture }) {
   }
 
   // Inputs: { left: { pos, vel, grip }, right: { pos, vel, grip } }
+  function computeHeadFrame() {
+    camera.getWorldPosition(_head);
+    camera.getWorldDirection(_fwd);
+    _fwd.y = 0;
+    if (_fwd.lengthSq() < 1e-6) _fwd.set(0, 0, -1);
+    _fwd.normalize();
+    _right.crossVectors(_fwd, UP).normalize();
+  }
+
   function update(dt, time, inputs) {
+    computeHeadFrame();
     for (const arm of arms) {
       const input = arm.side === -1 ? inputs.left : inputs.right;
       updateArm(arm, dt, input);
