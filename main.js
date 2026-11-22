@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { createPowers } from './powers.js';
+import { createTools } from './tools.js';
+import { createCommandMenu } from './menu.js';
 
 // ---------------------------------------------------------------------------
 // Renderer + XR
@@ -137,7 +139,7 @@ const trailFragmentShader = /* glsl */ `
 const bodies = [];
 const kinematics = [];
 
-function makeBody({ geometry, color, x, z, shape, mass = 1 }) {
+function makeBody({ geometry, color, x, z, shape, mass = 1, bounce = 0.3, friction = 0.4 }) {
   geometry.computeBoundingBox();
   const bb = geometry.boundingBox;
   geometry.translate(-(bb.min.x + bb.max.x) / 2, -bb.min.y, -(bb.min.z + bb.max.z) / 2);
@@ -169,6 +171,8 @@ function makeBody({ geometry, color, x, z, shape, mass = 1 }) {
     r: 0,                                     // world radius (sphere)
     half: new THREE.Vector3(),                // world half extents (box)
     mass,
+    bounce,                                    // 0 = dead, 1 = perfectly bouncy
+    friction,                                  // how grippy the surface is
     invMass: 1 / mass,
     vel: new THREE.Vector3(),
     state: 'free',
@@ -326,7 +330,7 @@ function resolvePair(a, b) {
   if (vn >= 0) return; // already separating
 
   // Normal impulse
-  const e = Math.min(RESTITUTION, 1);
+  const e = (a.bounce !== undefined && b.bounce !== undefined) ? (a.bounce + b.bounce) / 2 : RESTITUTION;
   const j = (-(1 + e) * vn) / invSum;
   a.vel.addScaledVector(n, -j * a.invMass);
   b.vel.addScaledVector(n, j * b.invMass);
@@ -336,7 +340,8 @@ function resolvePair(a, b) {
   const tLen = _tan.length();
   if (tLen > 1e-6) {
     _tan.divideScalar(tLen);
-    const jt = Math.min(tLen / invSum, FRICTION * j);
+    const mu = (a.friction !== undefined && b.friction !== undefined) ? Math.sqrt(a.friction * b.friction) : FRICTION;
+    const jt = Math.min(tLen / invSum, mu * j);
     a.vel.addScaledVector(_tan, jt * a.invMass);
     b.vel.addScaledVector(_tan, -jt * b.invMass);
   }
@@ -376,7 +381,7 @@ function physicsStep(h) {
     if (minY < 0) {
       b.mesh.position.y -= minY;
       b.center.y -= minY;
-      if (b.vel.y < -0.5) b.vel.y *= -RESTITUTION_GROUND;
+      if (b.vel.y < -0.5) b.vel.y *= -(b.bounce * 0.9 + 0.05);
       else b.vel.y = 0;
       const f = Math.exp(-GROUND_FRICTION * h);
       b.vel.x *= f;
@@ -1035,12 +1040,86 @@ window.__sandbox = { player, bodies, camera };
 
 const MAX_HAND_SPEED = 10; // m/s; faster than this is treated as a tracking jump
 
+// Time control: 1 = normal, lower = slow motion
+let timeScale = 1;
+function setTimeScale(v) {
+  timeScale = THREE.MathUtils.clamp(v, 0.1, 1);
+}
+function getTimeScale() {
+  return timeScale;
+}
+
+// Spawnable objects: shape, size, mass and surface, picked at random
+const SPAWN_PRESETS = [
+  { name: 'Wooden crate', make: () => new THREE.BoxGeometry(0.4, 0.4, 0.4), shape: 'box', mass: 2, bounce: 0.2, friction: 0.6 },
+  { name: 'Rubber ball', make: () => new THREE.SphereGeometry(0.2, 32, 16), shape: 'sphere', mass: 0.5, bounce: 0.85, friction: 0.7 },
+  { name: 'Metal block', make: () => new THREE.BoxGeometry(0.3, 0.3, 0.3), shape: 'box', mass: 6, bounce: 0.15, friction: 0.25 },
+  { name: 'Plank', make: () => new THREE.BoxGeometry(1.4, 0.1, 0.4), shape: 'box', mass: 1.5, bounce: 0.25, friction: 0.5 },
+  { name: 'Ice cube', make: () => new THREE.BoxGeometry(0.25, 0.25, 0.25), shape: 'box', mass: 0.8, bounce: 0.1, friction: 0.05 },
+];
+const SPAWN_COLORS = [0xc68b59, 0xe03131, 0x868e96, 0xa0522d, 0x9bd9ff];
+let spawnCount = 0;
+
+// Drops a random preset at (x, y, z) with a small push along `dir`
+function spawnObject(x, y, z, dir) {
+  const preset = SPAWN_PRESETS[spawnCount % SPAWN_PRESETS.length];
+  const color = SPAWN_COLORS[spawnCount % SPAWN_COLORS.length];
+  spawnCount++;
+  const body = makeBody({
+    geometry: preset.make(),
+    color,
+    x,
+    z,
+    shape: preset.shape,
+    mass: preset.mass,
+    bounce: preset.bounce,
+    friction: preset.friction,
+  });
+  body.mesh.position.y = Math.max(y, 0);
+  body.home.copy(body.mesh.position);
+  if (dir) body.vel.copy(dir);
+  meshes.push(body.mesh);
+  return body;
+}
+
+const tools = createTools({
+  hands,
+  keys,
+  getTimeScale,
+  setTimeScale,
+  spawn: (pos, dir) => spawnObject(pos.x, pos.y, pos.z, dir),
+  camera,
+  player,
+});
+scene.add(tools.group);
+
+// Hand command menu (see menu.js)
+function conjureAhead() {
+  const fwd = camera.getWorldDirection(new THREE.Vector3());
+  fwd.y = 0;
+  fwd.normalize();
+  const p = camera.getWorldPosition(new THREE.Vector3()).addScaledVector(fwd, 1.5);
+  spawnObject(p.x, 1.2, p.z, null);
+}
+const menu = createCommandMenu({
+  scene,
+  camera,
+  hands,
+  keys,
+  commands: [
+    { label: 'Conjure', color: 0xffe066, run: conjureAhead },
+    { label: 'Time Warp', color: 0x74c0fc, run: () => setTimeScale(getTimeScale() < 1 ? 1 : 0.25) },
+    { label: 'Reset', color: 0xff8787, run: () => resetObjects() },
+    { label: 'Rewind (soon)', color: 0x868e96, disabled: true, run: () => {} },
+  ],
+});
+
 const clock = new THREE.Clock();
 let elapsed = 0;
 let physicsAccumulator = 0;
 
 function animate() {
-  const dt = Math.min(clock.getDelta(), 0.05);
+  const dt = Math.min(clock.getDelta(), 0.05) * timeScale;
   elapsed += dt;
 
   updateMovement(dt);
@@ -1076,6 +1155,8 @@ function animate() {
   }
 
   powers.update(dt);
+  tools.update(dt);
+  menu.update(dt);
   checkClapReset(dt);
 
   // Build the list of colliders for this frame
