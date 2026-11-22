@@ -195,6 +195,13 @@ makeBody({ geometry: new THREE.BoxGeometry(0.2, 0.2, 0.2), color: 0x3bc9db, x: 0
 makeBody({ geometry: new THREE.BoxGeometry(1, 1, 1), color: 0x9aa0a6, x: 2.2, z: -2.2, shape: 'box', mass: 30 });
 makeBody({ geometry: new THREE.BoxGeometry(0.3, 2, 0.3), color: 0x6c757d, x: -2.4, z: -2.6, shape: 'box', mass: 8 });
 
+// Extremely heavy: hands can't lift these, Doctor Octopus can
+makeBody({ geometry: new THREE.BoxGeometry(1.2, 0.8, 1.2), color: 0x2b2d31, x: -3.4, z: -3.2, shape: 'box', mass: 400 });
+makeBody({ geometry: new THREE.SphereGeometry(0.5, 32, 16), color: 0x5c5f66, x: 3.6, z: -3.4, shape: 'sphere', mass: 2000 });
+
+// Hands can only lift objects up to this mass (kg-ish); tentacles ignore it
+const HAND_MAX_MASS = 40;
+
 const meshes = bodies.map((b) => b.mesh);
 
 // Refresh a dynamic body's world-space collider from its mesh
@@ -728,12 +735,14 @@ function onGrabStart(rig) {
   if (hit) {
     target = bodies.find((b) => b.mesh === hit.object) || null;
   }
+  if (target && target.mass > HAND_MAX_MASS) target = null;
 
   // 2. Proximity fallback (useful for hands)
   if (!target) {
     rig.controller.getWorldPosition(tmpWorld);
     let best = 0.15;
     for (const b of bodies) {
+      if (b.mass > HAND_MAX_MASS) continue;
       refreshBody(b);
       const d = b.center.distanceTo(tmpWorld);
       if (d < best) {

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createOctopus } from './octopus.js';
 
 // ---------------------------------------------------------------------------
 // Superpowers + wizard gesture spells, driven by hand tracking.
@@ -66,6 +67,8 @@ function makePose() {
 const _s1 = new THREE.Vector3();
 const _s2 = new THREE.Vector3();
 const _s3 = new THREE.Vector3();
+const _fwd = new THREE.Vector3();
+const _right = new THREE.Vector3();
 
 function jointPos(rig, name, out) {
   const j = rig.hand.joints && rig.hand.joints[name];
@@ -181,10 +184,17 @@ export function createPowers(ctx) {
     hud.textContent = lines.join('\n');
   }
 
-  // Desktop: keys 1-8 equip wheel slots
+  // Desktop: keys 1-8 equip wheel slots, T toggles the octopus arms
+  let toggleRequested = false;
+  function consumeToggle() {
+    const v = toggleRequested;
+    toggleRequested = false;
+    return v;
+  }
   window.addEventListener('keydown', (e) => {
     const m = /^Digit([1-8])$/.exec(e.code);
     if (m) selectSlot(Number(m[1]) - 1, true);
+    if (e.code === 'KeyT') toggleRequested = true;
   });
 
   function selectSlot(i, fromKey = false) {
@@ -193,6 +203,7 @@ export function createPowers(ctx) {
       showToast(`Slot ${i + 1} is empty. Room for a future power.`);
       return;
     }
+    if (equipped !== power) octopus.setDeployed(false);
     equipped = power;
     showToast(`Equipped: ${power.name}`);
     if (fromKey) refreshHud();
@@ -307,139 +318,8 @@ export function createPowers(ctx) {
     }
   }
 
-  // ----- Doctor Octopus ---------------------------------------------------
-  const tentacleMaterial = new THREE.MeshStandardMaterial({
-    color: 0x7d3c98,
-    map: gridTexture,
-    roughness: 0.4,
-    metalness: 0.3,
-  });
-  const tentacles = [0, 1].map(() => ({
-    tip: new THREE.Vector3(),
-    points: Array.from({ length: 14 }, () => new THREE.Vector3()),
-    grabbed: null,
-    grabVel: new THREE.Vector3(),
-    mesh: null,
-    active: false,
-  }));
-  const tentacleSide = new THREE.Vector3();
-
-  function tentacleBase(i, out, aimOut) {
-    const rig = hands[i];
-    const pose = rig && rig.pose;
-    if (pose) {
-      out.copy(pose.palmCenter);
-      aimOut.copy(pose.indexDir.lengthSq() > 0 ? pose.indexDir : pose.palmFwd);
-      return;
-    }
-    // Desktop fallback: fire from either side of the camera, forward
-    camera.getWorldDirection(aimOut);
-    tentacleSide.crossVectors(aimOut, UP).normalize().multiplyScalar(i === 0 ? -0.3 : 0.3);
-    camera.getWorldPosition(out).add(tentacleSide).addScaledVector(UP, -0.25);
-  }
-
-  function nearestFreeBody(point, range) {
-    let best = null;
-    let bestD = range;
-    for (const b of bodies) {
-      if (b.state !== 'free') continue;
-      const d = b.center.distanceTo(point);
-      const reach = (b.shape === 'sphere' ? b.r : Math.max(b.half.x, b.half.y, b.half.z)) + 0.02;
-      if (d - reach < bestD) {
-        bestD = d - reach;
-        best = b;
-      }
-    }
-    return best;
-  }
-
-  function releaseTentacle(tn) {
-    if (tn.grabbed) {
-      const b = tn.grabbed;
-      b.state = 'free';
-      b.invMass = 1 / b.mass;
-      b.vel.copy(tn.grabVel);
-      if (b.vel.length() > 8) b.vel.setLength(8);
-      tn.grabbed = null;
-    }
-  }
-
-  function updateTentacles(dt, time, using) {
-    const base = new THREE.Vector3();
-    const aim = new THREE.Vector3();
-    for (let i = 0; i < tentacles.length; i++) {
-      const tn = tentacles[i];
-      tn.active = using;
-      if (!using) {
-        releaseTentacle(tn);
-        tn.tip.lerp(tn.points[0], 1 - Math.exp(-12 * dt));
-        if (!tn.mesh) continue;
-        tn.mesh.visible = false;
-        continue;
-      }
-
-      tentacleBase(i, base, aim);
-
-      if (!tn.grabbed) {
-        // Shoot out toward the aim point, then look for something to grab
-        const target = _s1.copy(base).addScaledVector(aim, TENTACLE_REACH);
-        tn.tip.lerp(target, 1 - Math.exp(-14 * dt));
-        const found = nearestFreeBody(tn.tip, TENTACLE_GRAB_RANGE);
-        if (found) {
-          // `using` already means both hands are pinched (or Space on desktop)
-          tn.grabbed = found;
-          found.state = 'tentacle';
-          found.invMass = 0;
-        }
-      } else {
-        // Reel the object back to the hand, in front of the palm
-        const b = tn.grabbed;
-        const want = _s2.copy(base).addScaledVector(aim, 0.35);
-        const s = b.mesh.scale.x;
-        const oldBase = b.mesh.position.clone();
-        const newCenterTarget = _s3.copy(want);
-        const newBase = newCenterTarget.sub(_s1.copy(b.localCenter).multiplyScalar(s));
-        b.mesh.position.lerp(newBase, 1 - Math.exp(-8 * dt));
-        tn.grabVel.copy(b.mesh.position).sub(oldBase).divideScalar(Math.max(dt, 1e-4));
-        b.vel.copy(tn.grabVel);
-        tn.tip.copy(b.center).lerp(base, 0.1);
-      }
-
-      // Tentacle shape: a wavy curve from the base to the tip
-      const sideAxis = tentacleSide.crossVectors(aim, UP);
-      if (sideAxis.lengthSq() < 1e-6) sideAxis.set(1, 0, 0);
-      sideAxis.normalize();
-      const N = tn.points.length;
-      const wiggle = tn.grabbed ? 0.03 : 0.12;
-      for (let k = 0; k < N; k++) {
-        const t = k / (N - 1);
-        tn.points[k].lerpVectors(base, tn.tip, t);
-        const sway = Math.sin(time * 7 + k * 0.9 + i * 2) * wiggle * Math.sin(Math.PI * t);
-        tn.points[k].addScaledVector(sideAxis, sway);
-      }
-      rebuildTentacleMesh(tn);
-    }
-  }
-
-  function rebuildTentacleMesh(tn) {
-    if (!tn.mesh) {
-      tn.mesh = new THREE.Group();
-      tn.body = new THREE.Mesh(new THREE.SphereGeometry(0.04, 12, 8), tentacleMaterial);
-      tn.mesh.add(tn.body);
-      tn.line = null;
-      scene.add(tn.mesh);
-    }
-    if (tn.line) {
-      tn.mesh.remove(tn.line);
-      tn.line.geometry.dispose();
-    }
-    const curve = new THREE.CatmullRomCurve3(tn.points, false, 'catmullrom', 0.5);
-    const geometry = new THREE.TubeGeometry(curve, 24, 0.028, 8, false);
-    tn.line = new THREE.Mesh(geometry, tentacleMaterial);
-    tn.mesh.add(tn.line);
-    tn.body.position.copy(tn.tip);
-    tn.mesh.visible = true;
-  }
+  // ----- Doctor Octopus (robotic arms, see octopus.js) ----------------------
+  const octopus = createOctopus({ scene, player, bodies, gridTexture });
 
   // ----- Superfly ---------------------------------------------------------
   const flyDir = new THREE.Vector3();
@@ -472,21 +352,30 @@ export function createPowers(ctx) {
     }
   }
 
-  // ----- Power use (both pinches) -------------------------------------------
-  function updatePower(dt, time, bothPinching, pinchEdge) {
-    if (bothPinching && !powerActive && equipped) {
+  // ----- Power use -----------------------------------------------------------
+  // Octopus: both-hand pinch (or T) toggles deploy. Superfly: hold to fly.
+  function updatePower(dt, time, using, toggleEdge, inputs) {
+    const isOctopus = !!equipped && equipped.id === 'octopus';
+    const isFly = !!equipped && equipped.id === 'superfly';
+
+    if (isOctopus && toggleEdge) {
+      const next = !octopus.isDeployed();
+      octopus.setDeployed(next);
+      if (next) for (const h of hands) cancelHandGrab(h);
+      showToast(next ? 'Tentacles deployed' : 'Tentacles retracted');
+    }
+
+    if (isFly && using && !powerActive) {
       powerActive = true;
       for (const h of hands) cancelHandGrab(h);
       showToast(`${equipped.name}!`, 1.0);
-    } else if (!bothPinching && powerActive) {
+    } else if (!(isFly && using) && powerActive) {
       powerActive = false;
     }
 
-    const usingOctopus = powerActive && equipped && equipped.id === 'octopus';
-    const usingFly = powerActive && equipped && equipped.id === 'superfly';
-
-    updateTentacles(dt, time, usingOctopus);
-    updateFlight(dt, usingFly);
+    octopus.update(dt, time, inputs);
+    updateFlight(dt, isFly && powerActive);
+    octopus.updatePlayer(dt, isFly && powerActive);
     return powerActive;
   }
 
@@ -610,6 +499,24 @@ export function createPowers(ctx) {
   }
 
   // ----- Public API -------------------------------------------------------
+  function handInput(rig, pose, side) {
+    if (!renderer.xr.isPresenting) {
+      // Desktop: virtual hands in front of the camera
+      camera.getWorldDirection(_fwd);
+      _right.crossVectors(_fwd, UP).normalize();
+      const pos = camera.getWorldPosition(new THREE.Vector3())
+        .addScaledVector(_right, side * 0.35)
+        .addScaledVector(_fwd, 0.5)
+        .addScaledVector(UP, -0.25);
+      return { pos, vel: new THREE.Vector3(), grip: !!keys && keys.has('Space') };
+    }
+    if (pose) return { pos: pose.wrist, vel: pose.wristVel, grip: !!rig.pinching };
+    if (rig.connected) {
+      return { pos: rig.controller.getWorldPosition(new THREE.Vector3()), vel: rig.vel, grip: !!rig.pinching };
+    }
+    return null;
+  }
+
   function update(dt) {
     const time = performance.now() / 1000;
     const left = hands.find((h) => h.handedness === 'left') || hands[0];
@@ -622,14 +529,19 @@ export function createPowers(ctx) {
     const bothPinch = lpinch && rpinch;
 
     const rightPinchEdge = rpinch && !prevRightPinch;
+    const bothEdge = bothPinch && !prevBothPinch;
     prevRightPinch = rpinch;
     prevBothPinch = bothPinch;
 
     updateWheel(lpose, rpose, rightPinchEdge);
 
-    const desktopUse = !renderer.xr.isPresenting && !!keys && keys.has('Space');
-    const using = bothPinch || desktopUse;
-    updatePower(dt, time, using, !prevBothPinch && using);
+    const toggleEdge = bothEdge || consumeToggle();
+    const using = bothPinch || (!renderer.xr.isPresenting && !!keys && keys.has('Space'));
+    const inputs = {
+      left: handInput(left, lpose, -1),
+      right: handInput(right, rpose, 1),
+    };
+    updatePower(dt, time, using, toggleEdge, inputs);
 
     updateSpells(dt, lpose, rpose);
     updateProjectiles(dt);
@@ -641,11 +553,11 @@ export function createPowers(ctx) {
 
   // Main calls this to stop a hand's normal grab while the wheel or a power is using the hands
   function blocksGrab() {
-    return wheelOpen || powerActive;
+    return wheelOpen || powerActive || octopus.isDeployed();
   }
 
   function reset() {
-    for (const tn of tentacles) releaseTentacle(tn);
+    octopus.reset();
     for (const p of projectiles) scene.remove(p.mesh);
     projectiles.length = 0;
     for (const s of shockwaves) {
