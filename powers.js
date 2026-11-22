@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { createOctopus } from './octopus.js';
+import { createSpider } from './spider.js';
 
 // ---------------------------------------------------------------------------
 // Superpowers + wizard gesture spells, driven by hand tracking.
@@ -26,7 +27,7 @@ const WHEEL_STEP = (Math.PI * 2) / WHEEL_SLOTS;
 export const POWERS = [
   { id: 'octopus', name: 'Doctor Octopus', color: 0x8e44ad },
   { id: 'superfly', name: 'Superfly', color: 0x2e86de },
-  { id: 'spidersense', name: 'Spider-Sense', color: 0xe03131 },
+  { id: 'spider', name: 'Spider', color: 0xe03131 },
 ];
 
 const CURL_RATIO = 1.6;          // tip-to-wrist / metacarpal-to-wrist; above = extended
@@ -330,6 +331,7 @@ export function createPowers(ctx) {
 
   // ----- Doctor Octopus (robotic arms, see octopus.js) ----------------------
   const octopus = createOctopus({ scene, camera, player, bodies, gridTexture });
+  const spider = createSpider({ scene, player, camera, bodies });
 
   // ----- Superfly ---------------------------------------------------------
   const flyDir = new THREE.Vector3();
@@ -385,7 +387,7 @@ export function createPowers(ctx) {
 
     octopus.update(dt, time, inputs);
     updateFlight(dt, isFly && powerActive);
-    octopus.updatePlayer(dt, isFly && powerActive);
+    octopus.updatePlayer(dt, (isFly && powerActive) || spider.isSwinging());
     return powerActive;
   }
 
@@ -471,6 +473,8 @@ export function createPowers(ctx) {
   function updateSpells(dt, left, right, worldDt = dt) {
     if (dt > 0) playerVelocity.copy(player.position).sub(prevPlayerPos).divideScalar(dt);
     prevPlayerPos.copy(player.position);
+    // Spider owns its own gestures, so spark, shockwave and gather stay off
+    if (equipped && equipped.id === 'spider') return;
     cooldowns.spark = Math.max(0, cooldowns.spark - dt);
     cooldowns.push = Math.max(0, cooldowns.push - dt);
 
@@ -563,6 +567,10 @@ export function createPowers(ctx) {
       left: handInput(left, lpose, -1),
       right: handInput(right, rpose, 1),
     };
+    if (equipped && equipped.id === 'spider') {
+      const blocked = wheelOpen || powerActive || octopus.isDeployed();
+      spider.update(dt, worldDt, lpose, rpose, blocked);
+    }
     updatePower(dt, time, using, toggleEdge, inputs);
 
     updateSpells(dt, lpose, rpose, worldDt);
@@ -580,6 +588,7 @@ export function createPowers(ctx) {
 
   function reset() {
     octopus.reset();
+    spider.reset();
     for (const p of projectiles) scene.remove(p.mesh);
     projectiles.length = 0;
     for (const s of shockwaves) {

@@ -1103,7 +1103,7 @@ scene.add(tools.group);
 const spiderSense = createSpiderSense({
   bodies,
   camera,
-  isEnabled: () => !!powers.equipped && powers.equipped.id === 'spidersense',
+  isEnabled: () => !!powers.equipped && powers.equipped.id === 'spider',
 });
 
 // Living world: motes, hand wakes and floor ripples, always moving (see ambience.js)
