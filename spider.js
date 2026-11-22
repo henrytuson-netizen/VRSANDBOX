@@ -69,7 +69,7 @@ export function createSpider({ scene, player, camera, bodies }) {
     let best = null;
     let bestT = SHOT_RANGE;
     for (const b of bodies) {
-      if (b.state !== 'free') continue;
+      if (b.state !== 'free' && b.state !== 'static') continue;
       _d.subVectors(b.center, pose.idxTip);
       const t = _d.dot(pose.indexDir);
       if (t < 0.3 || t > bestT) continue;

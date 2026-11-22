@@ -6,6 +6,7 @@ import { createCommandMenu } from './menu.js';
 import { createAmbience } from './ambience.js';
 import { createSpiderSense } from './spidersense.js';
 import { createEnemies } from './enemies.js';
+import { cityBlocks } from './city.js';
 
 // ---------------------------------------------------------------------------
 // Renderer + XR
@@ -144,8 +145,9 @@ const bodies = [];
 const kinematics = [];
 
 let nextBodyId = 0;   // never reused, so rewind snapshots stay valid when bullets are removed
+const staticBodies = [];   // fixed colliders such as buildings: never move, but push things
 
-function makeBody({ geometry, color, x, z, shape, mass = 1, bounce = 0.3, friction = 0.4 }) {
+function makeBody({ geometry, color, x, z, shape, mass = 1, bounce = 0.3, friction = 0.4, isStatic = false }) {
   geometry.computeBoundingBox();
   const bb = geometry.boundingBox;
   geometry.translate(-(bb.min.x + bb.max.x) / 2, -bb.min.y, -(bb.min.z + bb.max.z) / 2);
@@ -179,17 +181,19 @@ function makeBody({ geometry, color, x, z, shape, mass = 1, bounce = 0.3, fricti
     mass,
     bounce,                                    // 0 = dead, 1 = perfectly bouncy
     friction,                                  // how grippy the surface is
-    invMass: 1 / mass,
+    invMass: isStatic ? 0 : 1 / mass,
     vel: new THREE.Vector3(),
-    state: 'free',
+    state: isStatic ? 'static' : 'free',
+    isStatic,
     home: mesh.position.clone(),
     color,
     hand: null,
     zoom: null,
-    trail: createTrail(color),
+    trail: isStatic ? null : createTrail(color),
     id: nextBodyId++,                        // stable id for rewind snapshots
   };
   bodies.push(body);
+  if (isStatic) staticBodies.push(body);
   return body;
 }
 
@@ -205,6 +209,18 @@ makeBody({ geometry: new THREE.BoxGeometry(0.2, 0.2, 0.2), color: 0x3bc9db, x: 0
 // Reference blocks: heavy, so they barely budge when hit
 makeBody({ geometry: new THREE.BoxGeometry(1, 1, 1), color: 0x9aa0a6, x: 2.2, z: -2.2, shape: 'box', mass: 30 });
 makeBody({ geometry: new THREE.BoxGeometry(0.3, 2, 0.3), color: 0x6c757d, x: -2.4, z: -2.6, shape: 'box', mass: 8 });
+
+// The test city: static blocks you can web onto and swing between
+for (const bld of cityBlocks()) {
+  makeBody({
+    geometry: new THREE.BoxGeometry(bld.w, bld.h, bld.d),
+    color: bld.color,
+    x: bld.x,
+    z: bld.z,
+    shape: 'box',
+    isStatic: true,
+  });
+}
 
 // Extremely heavy: hands can't lift these, Doctor Octopus can
 makeBody({ geometry: new THREE.BoxGeometry(1.2, 0.8, 1.2), color: 0x2b2d31, x: -3.4, z: -3.2, shape: 'box', mass: 400 });
@@ -379,6 +395,13 @@ function physicsStep(h) {
         resolvePair(activeList[i], activeList[j]);
       }
     }
+  }
+
+  // Fixed colliders (buildings): only moving bodies are pushed by them
+  for (let i = 0; i < activeList.length; i++) {
+    const a = activeList[i];
+    if (a.invMass === 0) continue;
+    for (const s of staticBodies) resolvePair(a, s);
   }
 
   // 4. Floor
@@ -748,14 +771,14 @@ function onGrabStart(rig) {
   if (hit) {
     target = bodies.find((b) => b.mesh === hit.object) || null;
   }
-  if (target && target.mass > HAND_MAX_MASS) target = null;
+  if (target && (target.mass > HAND_MAX_MASS || target.isStatic)) target = null;
 
   // 2. Proximity fallback (useful for hands)
   if (!target) {
     rig.controller.getWorldPosition(tmpWorld);
     let best = 0.15;
     for (const b of bodies) {
-      if (b.mass > HAND_MAX_MASS) continue;
+      if (b.mass > HAND_MAX_MASS || b.isStatic) continue;
       refreshBody(b);
       const d = b.center.distanceTo(tmpWorld);
       if (d < best) {
@@ -836,11 +859,12 @@ function resetObjects() {
     }
   }
   for (const b of bodies) {
+    if (b.isStatic) continue;   // buildings stay where they are
     b.state = 'free';
     b.invMass = 1 / b.mass;
     b.mesh.position.copy(b.home);
     b.vel.set(0, 0, 0);
-    b.trail.points.length = 0;
+    if (b.trail) b.trail.points.length = 0;
   }
 }
 
@@ -1212,7 +1236,7 @@ function restoreSnapshot(snap) {
   player.position.copy(snap.player);
   for (const s of snap.bodies) {
     const b = bodies.find((x) => x.id === s.id);
-    if (!b) continue;
+    if (!b || b.isStatic) continue;
     b.mesh.position.copy(s.pos);
     b.vel.set(0, 0, 0);
     b.state = 'free';
@@ -1290,7 +1314,7 @@ function animate() {
   checkClapReset(dt);
 
   // Build the list of colliders for this frame
-  activeList = bodies.slice();
+  activeList = bodies.filter((b) => !b.isStatic);
   for (const rig of hands) {
     for (const kb of rig.kinJoints.values()) if (kb.active) activeList.push(kb);
     if (rig.kinController.active) activeList.push(rig.kinController);
@@ -1310,6 +1334,7 @@ function animate() {
   // Trails
   camera.getWorldPosition(_camPos);
   for (const b of bodies) {
+    if (!b.trail) continue;
     const moving = b.state === 'zoom' || b.vel.length() > TRAIL_MIN_SPEED;
     updateTrail(b, elapsed, moving);
   }
