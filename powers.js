@@ -31,7 +31,9 @@ export const POWERS = [
 const CURL_RATIO = 1.6;          // tip-to-wrist / metacarpal-to-wrist; above = extended
 const PINCH_ON = 0.03;           // metres, thumb-index tip distance
 const PINCH_OFF = 0.045;
-const PALM_UP = 0.6;             // palm normal y above this = palm up
+const PALM_UP = 0.8;             // palm normal y above this = palm up
+const WHEEL_HOLD = 0.5;          // seconds the palm must stay up before the wheel opens
+const WHEEL_CLOSE_DELAY = 0.3;             // palm normal y above this = palm up
 const TENTACLE_REACH = 3.2;      // metres
 const TENTACLE_GRAB_RANGE = 0.35;
 const FLY_SPEED = 7;             // m/s
@@ -159,6 +161,8 @@ export function createPowers(ctx) {
   let wheelOpen = false;
   let wheelLatched = false; // stays shut until the palm drops, so one tilt = one open
   let wheelSelected = -1;
+  let wheelHold = 0;
+  let wheelAway = 0;
   let powerActive = false;
   let prevRightPinch = false;
   let prevBothPinch = false;
@@ -275,16 +279,17 @@ export function createPowers(ctx) {
   const wheelQuat = new THREE.Quaternion();
   const FORWARD_Z = new THREE.Vector3(0, 0, 1);
 
-  function updateWheel(left, right, rightPinchEdge) {
-    if (left && left.palmFacing.y > PALM_UP) {
-      if (!wheelOpen && !wheelLatched) {
-        wheelOpen = true;
-      }
-    } else if (wheelOpen || left) {
-      // palm dropped: close and unlatch
+  function updateWheel(left, right, rightPinchEdge, dt) {
+    // Open only after the palm has been held up for a moment; close shortly after it drops
+    const palmUp = !!left && left.palmFacing.y > PALM_UP;
+    wheelHold = palmUp ? wheelHold + dt : 0;
+    wheelAway = palmUp ? 0 : wheelAway + dt;
+    if (!wheelOpen && !wheelLatched && wheelHold >= WHEEL_HOLD) wheelOpen = true;
+    if (wheelOpen && wheelAway > WHEEL_CLOSE_DELAY) {
       wheelOpen = false;
       wheelLatched = false;
     }
+    if (!palmUp && wheelAway > WHEEL_CLOSE_DELAY) wheelLatched = false;
     if (!wheelOpen) {
       wheel.visible = false;
       return;
@@ -549,7 +554,7 @@ export function createPowers(ctx) {
     prevRightPinch = rpinch;
     prevBothPinch = bothPinch;
 
-    updateWheel(lpose, rpose, rightPinchEdge);
+    updateWheel(lpose, rpose, rightPinchEdge, dt);
 
     const toggleEdge = bothEdge || consumeToggle();
     const using = bothPinch || (!renderer.xr.isPresenting && !!keys && keys.has('Space'));

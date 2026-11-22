@@ -10,7 +10,7 @@ import * as THREE from 'three';
 // Both need the hand pose from powers.js (rig.pose), which is set each frame.
 // ---------------------------------------------------------------------------
 
-const HOLD_TIME = 0.4;      // seconds a thumbs-up must be held
+const HOLD_TIME = 0.7;      // seconds a thumbs-up must be held
 const COOLDOWN = 1.2;       // seconds between uses
 const SLOW_SCALE = 0.25;
 const SPARKS = 48;
@@ -113,6 +113,7 @@ export function createTools({ hands, keys, getTimeScale, setTimeScale, spawn, se
   let desktopB = false;
   let desktopN = false;
   let desktopRewind = false;
+  let rewindHold = 0;
   window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyB') desktopB = true;
     if (e.code === 'KeyN') desktopN = true;
@@ -140,8 +141,9 @@ export function createTools({ hands, keys, getTimeScale, setTimeScale, spawn, se
     }
 
     // Rewind: hold a left thumbs-down (or Y on desktop) to run time backwards
-    const thumbsDownHeld = !!(left && isThumbsDown(left.pose));
-    setRewindHeld(thumbsDownHeld || desktopRewind);
+    const thumbsDownNow = !!(left && isThumbsDown(left.pose));
+    rewindHold = thumbsDownNow ? rewindHold + dt : 0;
+    setRewindHeld(rewindHold > 0.5 || desktopRewind);
 
     // Desktop: B conjures two metres ahead, N toggles time warp
     if (desktopB) {

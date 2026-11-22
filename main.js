@@ -991,8 +991,8 @@ function updateMovement(dt) {
 // Hand gesture: clap both hands together to reset the objects
 // Wrists close together and moving toward each other quickly.
 // ---------------------------------------------------------------------------
-const CLAP_DISTANCE = 0.12;   // m between wrists
-const CLAP_APPROACH = 1.0;    // m/s closing speed
+const CLAP_DISTANCE = 0.08;   // m between wrists
+const CLAP_APPROACH = 1.8;    // m/s closing speed
 const CLAP_COOLDOWN = 1.0;    // s
 const _wristA = new THREE.Vector3();
 const _wristB = new THREE.Vector3();

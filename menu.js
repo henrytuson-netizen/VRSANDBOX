@@ -18,6 +18,9 @@ const OPEN_SPEED = 9;        // higher = snappier
 const STAGGER = 0.05;        // seconds between buttons
 const PINCH_ON = 0.03;
 const PINCH_OFF = 0.045;
+const LOOK_ANGLE = 0.8;     // how squarely the back of the hand must face you
+const OPEN_HOLD = 0.6;       // seconds of deliberate looking before it opens
+const CLOSE_DELAY = 0.3;     // seconds away before it closes
 
 function easeOutBack(t) {
   const c1 = 1.70158, c3 = c1 + 1;
@@ -81,6 +84,9 @@ export function createCommandMenu({ scene, camera, hands, keys, commands }) {
   let pinching = false;
   let desktopTab = false;
   let desktopOpen = false;   // Tab toggles this, persists between frames
+  let lookTimer = 0;
+  let awayTimer = 0;
+  let handOpen = false;
   const desktopRun = new Set();
 
   window.addEventListener('keydown', (e) => {
@@ -115,7 +121,7 @@ export function createCommandMenu({ scene, camera, hands, keys, commands }) {
     _toHead.subVectors(_head, pose.wrist).normalize();
     _back.copy(pose.palmFacing).negate();                  // back of the hand
     const backToFace = _back.dot(_toHead);
-    if (backToFace < 0.55) return false;
+    if (backToFace < LOOK_ANGLE) return false;
 
     _pos.copy(pose.wrist).addScaledVector(_back, 0.09);
     panel.position.copy(_pos);
@@ -136,7 +142,14 @@ export function createCommandMenu({ scene, camera, hands, keys, commands }) {
       desktopTab = false;
       desktopOpen = !desktopOpen;
     }
-    let wantOpen = !!leftPose && placeOnHand(left);
+    const looking = !!leftPose && placeOnHand(left);
+    lookTimer = looking ? lookTimer + dt : 0;
+    if (!handOpen && lookTimer >= OPEN_HOLD) handOpen = true;
+    if (handOpen) {
+      awayTimer = looking ? 0 : awayTimer + dt;
+      if (awayTimer > CLOSE_DELAY) handOpen = false;
+    }
+    let wantOpen = handOpen;
     if (!leftPose && desktopOpen) {
       // Desktop: float the panel in front of the camera, facing it
       wantOpen = true;
