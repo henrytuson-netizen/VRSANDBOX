@@ -5,6 +5,7 @@ import { createTools } from './tools.js';
 import { createCommandMenu } from './menu.js';
 import { createAmbience } from './ambience.js';
 import { createSpiderSense } from './spidersense.js';
+import { createEnemies } from './enemies.js';
 
 // ---------------------------------------------------------------------------
 // Renderer + XR
@@ -142,6 +143,8 @@ const trailFragmentShader = /* glsl */ `
 const bodies = [];
 const kinematics = [];
 
+let nextBodyId = 0;   // never reused, so rewind snapshots stay valid when bullets are removed
+
 function makeBody({ geometry, color, x, z, shape, mass = 1, bounce = 0.3, friction = 0.4 }) {
   geometry.computeBoundingBox();
   const bb = geometry.boundingBox;
@@ -184,7 +187,7 @@ function makeBody({ geometry, color, x, z, shape, mass = 1, bounce = 0.3, fricti
     hand: null,
     zoom: null,
     trail: createTrail(color),
-    id: bodies.length,                       // stable id for rewind snapshots
+    id: nextBodyId++,                        // stable id for rewind snapshots
   };
   bodies.push(body);
   return body;
@@ -309,6 +312,7 @@ const _rel = new THREE.Vector3();
 const _tan = new THREE.Vector3();
 
 function resolvePair(a, b) {
+  if (a.bullet && b.bullet) return;   // bullets pass through each other
   const invSum = a.invMass + b.invMass;
   if (invSum === 0) return;
 
@@ -360,7 +364,7 @@ function physicsStep(h) {
   // 1. Integrate free bodies
   for (const b of bodies) {
     if (b.state !== 'free') continue;
-    b.vel.y -= GRAVITY * h;
+    if (!b.noGravity) b.vel.y -= GRAVITY * h;
     b.vel.multiplyScalar(Math.exp(-AIR_DRAG * h));
     b.mesh.position.addScaledVector(b.vel, h);
   }
@@ -1041,7 +1045,6 @@ const powers = createPowers({
 });
 
 // Test hook for automated checks (read-only use)
-window.__sandbox = { player, bodies, camera };
 
 const MAX_HAND_SPEED = 10; // m/s; faster than this is treated as a tracking jump
 
@@ -1104,6 +1107,49 @@ const spiderSense = createSpiderSense({
   bodies,
   camera,
   isEnabled: () => !!powers.equipped && powers.equipped.id === 'spider',
+});
+
+// Bullets are short-lived physics bodies, so Spider-Sense can see them coming
+function fireBullet(origin, vel) {
+  const b = makeBody({
+    geometry: new THREE.SphereGeometry(0.05, 8, 6),
+    color: 0xffd43b,
+    x: origin.x,
+    z: origin.z,
+    shape: 'sphere',
+    mass: 0.05,
+    bounce: 0.1,
+    friction: 0.1,
+  });
+  b.mesh.position.copy(origin);
+  b.vel.copy(vel);
+  b.bullet = true;
+  b.noGravity = true;        // bullets fly straight, like fast bullets
+  b.expires = elapsed + 4;   // world seconds
+  return b;
+}
+
+// Removes spent bullets from the world
+function cleanupBullets() {
+  for (let i = bodies.length - 1; i >= 0; i--) {
+    const b = bodies[i];
+    if (!b.bullet || !(b.dead || elapsed > b.expires)) continue;
+    scene.remove(b.mesh);
+    scene.remove(b.trail.mesh);
+    b.trail.geometry.dispose();
+    b.mesh.geometry.dispose();
+    bodies.splice(i, 1);
+  }
+}
+
+// Enemies with guns (see enemies.js)
+const enemies = createEnemies({
+  scene,
+  player,
+  camera,
+  bodies,
+  gridTexture: objectGridTexture,
+  fireBullet,
 });
 
 // Living world: motes, hand wakes and floor ripples, always moving (see ambience.js)
@@ -1235,6 +1281,8 @@ function animate() {
     }
   }
 
+  cleanupBullets();
+  enemies.update(worldDt);
   powers.update(dt, worldDt);
   tools.update(dt);
   menu.update(dt);
@@ -1276,3 +1324,6 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
+// Test hook for automated checks (read-only use)
+window.__sandbox = { player, bodies, camera, spiderSense };
