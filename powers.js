@@ -467,7 +467,7 @@ export function createPowers(ctx) {
   gatherGlow.visible = false;
   scene.add(gatherGlow);
 
-  function updateSpells(dt, left, right) {
+  function updateSpells(dt, left, right, worldDt = dt) {
     if (dt > 0) playerVelocity.copy(player.position).sub(prevPlayerPos).divideScalar(dt);
     prevPlayerPos.copy(player.position);
     cooldowns.spark = Math.max(0, cooldowns.spark - dt);
@@ -512,7 +512,7 @@ export function createPowers(ctx) {
         const d = _s2.length();
         if (d > GATHER_RANGE || d < 1e-3) continue;
         _s2.divideScalar(d);
-        b.vel.addScaledVector(_s2, (1.5 + 4 * (1 - d / GATHER_RANGE)) * dt);
+        b.vel.addScaledVector(_s2, (1.5 + 4 * (1 - d / GATHER_RANGE)) * worldDt);
         if (b.vel.length() > 3) b.vel.setLength(3);
       }
     }
@@ -538,7 +538,7 @@ export function createPowers(ctx) {
     return null;
   }
 
-  function update(dt) {
+  function update(dt, worldDt = dt) {
     const time = performance.now() / 1000;
     const left = hands.find((h) => h.handedness === 'left') || hands[0];
     const right = hands.find((h) => h.handedness === 'right') || hands[1];
@@ -564,9 +564,9 @@ export function createPowers(ctx) {
     };
     updatePower(dt, time, using, toggleEdge, inputs);
 
-    updateSpells(dt, lpose, rpose);
-    updateProjectiles(dt);
-    updateShockwaves(dt);
+    updateSpells(dt, lpose, rpose, worldDt);
+    updateProjectiles(worldDt);
+    updateShockwaves(worldDt);
 
     if (toastTimer > 0) toastTimer -= dt;
     refreshHud();

@@ -1186,9 +1186,13 @@ function updateRewind(dt) {
   return true;
 }
 
+// Two clocks. `dt` is real time: you, your hands, gestures, powers and the menu
+// always use it. `worldDt` is scaled: objects, physics, motes and rewind use it,
+// so slow motion and time warp only change the world around you.
 function animate() {
-  const dt = Math.min(clock.getDelta(), 0.05) * timeScale;
-  elapsed += dt;
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const worldDt = dt * timeScale;
+  elapsed += worldDt;
 
   updateMovement(dt);
   updateFloor();
@@ -1222,10 +1226,10 @@ function animate() {
     }
   }
 
-  powers.update(dt);
+  powers.update(dt, worldDt);
   tools.update(dt);
   menu.update(dt);
-  ambience.update(dt, elapsed);
+  ambience.update(worldDt, elapsed);
   checkClapReset(dt);
 
   // Build the list of colliders for this frame
@@ -1235,15 +1239,15 @@ function animate() {
     if (rig.kinController.active) activeList.push(rig.kinController);
   }
 
-  if (updateRewind(dt)) {
+  if (updateRewind(worldDt)) {
     physicsAccumulator = 0;
   } else {
-    snapshotTimer += dt;
+    snapshotTimer += worldDt;
     if (snapshotTimer >= SNAPSHOT_INTERVAL) {
       snapshotTimer = 0;
       takeSnapshot();
     }
-    physicsAccumulator = stepPhysics(dt, physicsAccumulator);
+    physicsAccumulator = stepPhysics(worldDt, physicsAccumulator);
   }
 
   // Trails
