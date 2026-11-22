@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { createPowers } from './powers.js';
 
 // ---------------------------------------------------------------------------
 // Renderer + XR
@@ -548,6 +549,10 @@ const hands = [0, 1].map((i) => {
     grip,
     hand,
     connected: false,
+    handedness: null,     // 'left' | 'right', from the XR input source
+    selectDown: false,    // controller trigger / pinch (set by select events)
+    pinching: false,      // hand pinch with hysteresis (set by powers.js)
+    pose: null,           // hand pose, set by powers.js
     held: null,           // body currently zooming or held by this hand
     prevPos: new THREE.Vector3(),
     vel: new THREE.Vector3(),
@@ -559,10 +564,19 @@ const hands = [0, 1].map((i) => {
     kinController: { kin: true, shape: 'sphere', r: 0.04, center: new THREE.Vector3(), vel: new THREE.Vector3(), prev: new THREE.Vector3(), invMass: 0, active: false, hasPrev: false },
   };
 
-  controller.addEventListener('connected', () => { rig.connected = true; });
+  controller.addEventListener('connected', (e) => {
+    rig.connected = true;
+    rig.handedness = (e.data && e.data.handedness) || null;
+  });
   controller.addEventListener('disconnected', () => { rig.connected = false; });
-  controller.addEventListener('selectstart', () => onGrabStart(rig));
-  controller.addEventListener('selectend', () => onGrabEnd(rig));
+  controller.addEventListener('selectstart', () => {
+    rig.selectDown = true;
+    onGrabStart(rig);
+  });
+  controller.addEventListener('selectend', () => {
+    rig.selectDown = false;
+    onGrabEnd(rig);
+  });
 
   return rig;
 });
@@ -704,6 +718,7 @@ function easeInOutCubic(t) {
 
 function onGrabStart(rig) {
   if (rig.held) return;
+  if (powers.blocksGrab()) return; // wheel open or a power is using the hands
 
   let target = null;
 
@@ -786,6 +801,7 @@ function onGrabEnd(rig) {
 // Reset
 // ---------------------------------------------------------------------------
 function resetObjects() {
+  powers.reset();
   for (const rig of hands) {
     if (rig.held) {
       if (rig.held.state === 'held') scene.attach(rig.held.mesh);
@@ -992,6 +1008,19 @@ function checkClapReset(dt) {
   clapCooldown = CLAP_COOLDOWN;
 }
 
+// Superpowers, power wheel, and gesture spells (see powers.js)
+const powers = createPowers({
+  scene,
+  camera,
+  player,
+  bodies,
+  hands,
+  keys,
+  renderer,
+  gridTexture: objectGridTexture,
+  cancelHandGrab: (rig) => onGrabEnd(rig),
+});
+
 const clock = new THREE.Clock();
 let elapsed = 0;
 let physicsAccumulator = 0;
@@ -1025,6 +1054,7 @@ function animate() {
     }
   }
 
+  powers.update(dt);
   checkClapReset(dt);
 
   // Build the list of colliders for this frame
