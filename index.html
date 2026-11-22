@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VR Grid Sandbox</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #0b0d12;
+      font-family: system-ui, -apple-system, sans-serif;
+      color: #cfd8e3;
+    }
+    canvas { display: block; }
+    #hud {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      opacity: 0.7;
+      pointer-events: none;
+      user-select: none;
+    }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="hud">
+    Desktop: drag to orbit, R to reset objects<br>
+    VR: trigger or pinch to grab, release to throw
+  </div>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
