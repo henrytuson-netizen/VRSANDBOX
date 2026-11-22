@@ -15,7 +15,7 @@ const COOLDOWN = 1.2;       // seconds between uses
 const SLOW_SCALE = 0.25;
 const SPARKS = 48;
 
-export function createTools({ hands, keys, getTimeScale, setTimeScale, spawn, camera, player }) {
+export function createTools({ hands, keys, getTimeScale, setTimeScale, spawn, setRewindHeld, camera, player }) {
   // ----- Sparkle particles --------------------------------------------------
   const positions = new Float32Array(SPARKS * 3);
   const velocities = Array.from({ length: SPARKS }, () => new THREE.Vector3());
@@ -71,11 +71,16 @@ export function createTools({ hands, keys, getTimeScale, setTimeScale, spawn, ca
   // ----- Gesture holds --------------------------------------------------------
   const holds = hands.map(() => ({ time: 0, cooldown: 0, fired: false }));
 
-  function isThumbsUp(pose) {
+  // Only the thumb is out; the thumb tip points up (+) or down (-) from the wrist
+  function isThumbsGesture(pose, dir) {
     if (!pose) return false;
     const f = pose.fingers;
-    return f.thumb && !f.index && !f.middle && !f.ring && !f.pinky;
+    if (!(f.thumb && !f.index && !f.middle && !f.ring && !f.pinky)) return false;
+    const rise = pose.thumbTip.y - pose.wrist.y;
+    return dir > 0 ? rise > 0.02 : rise < -0.02;
   }
+  const isThumbsUp = (pose) => isThumbsGesture(pose, 1);
+  const isThumbsDown = (pose) => isThumbsGesture(pose, -1);
 
   function trackHold(i, pose, dt, onFire) {
     const h = holds[i];
@@ -107,9 +112,14 @@ export function createTools({ hands, keys, getTimeScale, setTimeScale, spawn, ca
   // Desktop fallbacks
   let desktopB = false;
   let desktopN = false;
+  let desktopRewind = false;
   window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyB') desktopB = true;
     if (e.code === 'KeyN') desktopN = true;
+    if (e.code === 'KeyY') desktopRewind = true;
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'KeyY') desktopRewind = false;
   });
 
   function update(dt) {
@@ -128,6 +138,10 @@ export function createTools({ hands, keys, getTimeScale, setTimeScale, spawn, ca
     if (left && left.pose) {
       trackHold(leftIndex, left.pose, dt, (pose) => toggleTimeWarp());
     }
+
+    // Rewind: hold a left thumbs-down (or Y on desktop) to run time backwards
+    const thumbsDownHeld = !!(left && isThumbsDown(left.pose));
+    setRewindHeld(thumbsDownHeld || desktopRewind);
 
     // Desktop: B conjures two metres ahead, N toggles time warp
     if (desktopB) {

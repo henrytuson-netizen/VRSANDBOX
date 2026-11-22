@@ -181,6 +181,7 @@ function makeBody({ geometry, color, x, z, shape, mass = 1, bounce = 0.3, fricti
     hand: null,
     zoom: null,
     trail: createTrail(color),
+    id: bodies.length,                       // stable id for rewind snapshots
   };
   bodies.push(body);
   return body;
@@ -1088,6 +1089,7 @@ const tools = createTools({
   getTimeScale,
   setTimeScale,
   spawn: (pos, dir) => spawnObject(pos.x, pos.y, pos.z, dir),
+  setRewindHeld,
   camera,
   player,
 });
@@ -1110,13 +1112,74 @@ const menu = createCommandMenu({
     { label: 'Conjure', color: 0xffe066, run: conjureAhead },
     { label: 'Time Warp', color: 0x74c0fc, run: () => setTimeScale(getTimeScale() < 1 ? 1 : 0.25) },
     { label: 'Reset', color: 0xff8787, run: () => resetObjects() },
-    { label: 'Rewind (soon)', color: 0x868e96, disabled: true, run: () => {} },
+    { label: 'Rewind', color: 0x9775fa, run: () => requestRewind(2.5) },
   ],
 });
 
 const clock = new THREE.Clock();
 let elapsed = 0;
 let physicsAccumulator = 0;
+
+// ---------------------------------------------------------------------------
+// Rewind: snapshots of every object and the player, replayed backwards
+// ---------------------------------------------------------------------------
+const HISTORY_SECONDS = 10;
+const SNAPSHOT_INTERVAL = 1 / 30;
+const REWIND_SPEED = 2;          // seconds of history replayed per real second
+const history = [];              // { player: Vector3, bodies: [{ id, pos }] }
+let snapshotTimer = 0;
+let rewindCursor = 0;
+let rewindHeld = false;          // held by a gesture or the Y key
+let rewindTimer = 0;             // seconds requested by the menu
+
+function setRewindHeld(v) {
+  rewindHeld = v;
+}
+function requestRewind(seconds) {
+  rewindTimer = Math.max(rewindTimer, seconds);
+}
+
+function takeSnapshot() {
+  history.push({
+    player: player.position.clone(),
+    bodies: bodies.map((b) => ({ id: b.id, pos: b.mesh.position.clone() })),
+  });
+  const max = Math.round(HISTORY_SECONDS / SNAPSHOT_INTERVAL);
+  if (history.length > max) history.shift();
+}
+
+function restoreSnapshot(snap) {
+  player.position.copy(snap.player);
+  for (const s of snap.bodies) {
+    const b = bodies.find((x) => x.id === s.id);
+    if (!b) continue;
+    b.mesh.position.copy(s.pos);
+    b.vel.set(0, 0, 0);
+    b.state = 'free';
+    b.invMass = 1 / b.mass;
+    b.hand = null;
+    b.zoom = null;
+  }
+}
+
+// Steps time backwards by one frame's worth of history. Returns true while rewinding.
+function updateRewind(dt) {
+  const active = rewindHeld || rewindTimer > 0;
+  if (rewindTimer > 0) rewindTimer = Math.max(0, rewindTimer - dt);
+  if (!active) {
+    rewindCursor = 0;
+    return false;
+  }
+  // Let go of anything held, so the rewound world isn't fought over
+  for (const h of hands) onGrabEnd(h);
+  rewindCursor += dt * REWIND_SPEED;
+  while (rewindCursor >= SNAPSHOT_INTERVAL && history.length > 1) {
+    rewindCursor -= SNAPSHOT_INTERVAL;
+    history.pop();
+  }
+  if (history.length > 0) restoreSnapshot(history[history.length - 1]);
+  return true;
+}
 
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05) * timeScale;
@@ -1166,7 +1229,16 @@ function animate() {
     if (rig.kinController.active) activeList.push(rig.kinController);
   }
 
-  physicsAccumulator = stepPhysics(dt, physicsAccumulator);
+  if (updateRewind(dt)) {
+    physicsAccumulator = 0;
+  } else {
+    snapshotTimer += dt;
+    if (snapshotTimer >= SNAPSHOT_INTERVAL) {
+      snapshotTimer = 0;
+      takeSnapshot();
+    }
+    physicsAccumulator = stepPhysics(dt, physicsAccumulator);
+  }
 
   // Trails
   camera.getWorldPosition(_camPos);

@@ -37,7 +37,9 @@ const TENTACLE_GRAB_RANGE = 0.35;
 const FLY_SPEED = 7;             // m/s
 const SPARK_SPEED = 14;          // m/s
 const SPARK_TRIGGER = 1.8;       // m/s flick speed
-const PUSH_TRIGGER = 1.8;
+const PUSH_TRIGGER = 2.4;       // m/s thrust relative to the body
+const PUSH_HOLD = 0.12;          // seconds the thrust must last
+const PUSH_COOLDOWN = 1.2;
 const PUSH_RANGE = 2.5;
 const PUSH_CONE = Math.cos(THREE.MathUtils.degToRad(35));
 const PUSH_STRENGTH = 6;
@@ -162,6 +164,8 @@ export function createPowers(ctx) {
   let prevBothPinch = false;
   let prevPinchTracked = { left: false, right: false };
   const cooldowns = { spark: 0, push: 0 };
+  const playerVelocity = new THREE.Vector3();   // how fast the player body is moving (walking, arm swing)
+  const prevPlayerPos = player.position.clone();
 
   // ----- HUD -------------------------------------------------------------
   const hud = document.createElement('div');
@@ -459,25 +463,36 @@ export function createPowers(ctx) {
   scene.add(gatherGlow);
 
   function updateSpells(dt, left, right) {
+    if (dt > 0) playerVelocity.copy(player.position).sub(prevPlayerPos).divideScalar(dt);
+    prevPlayerPos.copy(player.position);
     cooldowns.spark = Math.max(0, cooldowns.spark - dt);
     cooldowns.push = Math.max(0, cooldowns.push - dt);
 
-    // Spark: right index pointing, flicked forward
+    // Spark: right index pointing, flicked forward (relative to the body)
     if (right && isPointing(right) && cooldowns.spark === 0) {
-      const flick = right.idxVel.dot(right.indexDir);
+      const flick = _s1.copy(right.idxVel).sub(playerVelocity).dot(right.indexDir);
       if (flick > SPARK_TRIGGER) {
         fireSpark(right.idxTip, right.indexDir);
         cooldowns.spark = 0.5;
       }
     }
 
-    // Push: open palm shoved forward quickly
+    // Push: an open palm thrust forward, sustained, relative to the body.
+    // Walking and arm swing move the hands too, so their speed is measured
+    // against the player's own motion and must hold for a moment.
+    const blocked = wheelOpen || powerActive || octopus.isDeployed();
     for (const hand of [left, right]) {
-      if (!hand || !isOpen(hand) || cooldowns.push > 0) continue;
-      const shove = hand.wristVel.dot(hand.palmFwd);
-      if (shove > PUSH_TRIGGER) {
+      if (!hand) continue;
+      if (!isOpen(hand) || cooldowns.push > 0 || blocked) {
+        hand.pushT = 0;
+        continue;
+      }
+      const shove = _s1.copy(hand.wristVel).sub(playerVelocity).dot(hand.palmFwd);
+      hand.pushT = shove > PUSH_TRIGGER ? (hand.pushT || 0) + dt : 0;
+      if (hand.pushT >= PUSH_HOLD) {
         fireShockwave(hand.palmCenter, hand.palmFwd);
-        cooldowns.push = 0.8;
+        cooldowns.push = PUSH_COOLDOWN;
+        hand.pushT = 0;
       }
     }
 
