@@ -24,7 +24,13 @@ const MAX_REACH = UPPER_LEN + LOWER_LEN - 0.05;
 const MIN_REACH = 0.8;
 const MIRROR_GAIN = 4;            // hand offset from shoulder is multiplied by this
 const FOLLOW_RATE = 20;           // how quickly the target follows the hand (per second)
-const CLAW_LEN = 0.6;
+const PALM_LEN = 0.16;            // wrist to the base of the claw
+const FINGERS = 3;
+const FINGER_LEN_1 = 0.24;        // knuckle segment
+const FINGER_LEN_2 = 0.2;         // tip segment
+const FINGER_R = 0.05;
+const CURL_RATE = 10;             // how fast fingers open and close
+const DOWN = new THREE.Vector3(0, -1, 0);
 const GRAB_RANGE = 0.9;           // m from claw tip to object surface
 const PLANT_HEIGHT = 0.8;         // claw tip below this can plant on the floor
 const FLOOR_CLEARANCE = 0.15;     // targets are kept above this height
@@ -34,7 +40,7 @@ const SHOULDER_DROP = 0.45;       // shoulders sit this far below the head
 
 const UPPER_R = 0.28;
 const LOWER_R = 0.2;
-const CLAW_R = 0.12;
+const CLAW_R = 0.12;              // palm radius
 
 const WINCH_GAIN = 0.8;
 const MAX_WINCH_SPEED = 2.5;
@@ -55,6 +61,7 @@ const _right = new THREE.Vector3();
 const _pole = new THREE.Vector3();
 const _mid = new THREE.Vector3();
 const _claw = new THREE.Vector3();
+const _clawD = new THREE.Vector3();   // claw direction (kept separate: placeBetween reuses _dir)
 
 function bodyReach(b) {
   return b.shape === 'sphere' ? b.r : Math.max(b.half.x, b.half.y, b.half.z);
@@ -121,11 +128,21 @@ export function createOctopus({ scene, camera, player, bodies, gridTexture }) {
 
     const upper = new THREE.Mesh(cylinderGeometry, metal);
     const lower = new THREE.Mesh(cylinderGeometry, metal);
-    const claw = new THREE.Mesh(cylinderGeometry, glow);
+    const claw = new THREE.Mesh(sphereGeometry, glow);
     const jShoulder = new THREE.Mesh(sphereGeometry, glow);
     const jElbow = new THREE.Mesh(sphereGeometry, glow);
     const jWrist = new THREE.Mesh(sphereGeometry, glow);
     root.add(upper, lower, claw, jShoulder, jElbow, jWrist);
+
+    // Procedural three-finger claw: each finger is two segments
+    const fingers = [];
+    for (let i = 0; i < FINGERS; i++) {
+      const seg1 = new THREE.Mesh(cylinderGeometry, metal);
+      const seg2 = new THREE.Mesh(cylinderGeometry, metal);
+      const tip = new THREE.Mesh(sphereGeometry, glow);
+      root.add(seg1, seg2, tip);
+      fingers.push({ seg1, seg2, tip });
+    }
 
     return {
       side,                              // -1 left, +1 right
@@ -135,6 +152,10 @@ export function createOctopus({ scene, camera, player, bodies, gridTexture }) {
       wrist: new THREE.Vector3(),
       clawTip: new THREE.Vector3(),
       clawDir: new THREE.Vector3(0, 0, -1),   // where the claw points: the hand's fingers
+      fingers,
+      curl: 0,                                // 0 open .. 1 closed around something
+      curlTarget: 0,
+      plantAmt: 0,                            // 0 hand direction .. 1 pointing down at the floor
       target: new THREE.Vector3(),
       smooth: new THREE.Vector3(),
       handVel: new THREE.Vector3(),
@@ -242,7 +263,7 @@ export function createOctopus({ scene, camera, player, bodies, gridTexture }) {
     if (arm.anchor) arm.smooth.copy(arm.anchor);
 
     // Elbow hangs down and back, like a robot arm
-    _pole.copy(_right).multiplyScalar(arm.side * 1.0).addScaledVector(UP, -0.6).addScaledVector(_fwd, -0.2);
+    _pole.copy(_right).multiplyScalar(arm.side * 0.5).addScaledVector(UP, -1.0).addScaledVector(_fwd, -0.1);
     solveTwoBone(arm.shoulder, arm.smooth, _pole, arm.elbow, arm.wrist);
 
     // Claw points where the hand points (fingers direction), smoothly
@@ -255,7 +276,7 @@ export function createOctopus({ scene, camera, player, bodies, gridTexture }) {
     }
     if (arm.clawDir.lengthSq() < 1e-6) arm.clawDir.set(0, 0, -1);
     arm.clawDir.normalize();
-    arm.clawTip.copy(arm.wrist).addScaledVector(arm.clawDir, CLAW_LEN);
+    arm.clawTip.copy(arm.wrist).addScaledVector(arm.clawDir, PALM_LEN + 0.2);
 
     // Grip: rising edge grabs or plants, falling edge lets go
     const grip = !!(input && input.grip);
@@ -284,7 +305,52 @@ export function createOctopus({ scene, camera, player, bodies, gridTexture }) {
       b.vel.copy(arm.handVel);
     }
 
+    // Procedural grab pose targets
+    if (arm.anchor) {
+      arm.curlTarget = 0.35;                     // splay to plant on the floor
+    } else if (arm.grabbed) {
+      arm.curlTarget = 0.85;                     // hug the object
+    } else {
+      arm.curlTarget = grip ? 0.6 : 0.0;         // close while pinching, otherwise open
+    }
+    arm.curl += (arm.curlTarget - arm.curl) * (1 - Math.exp(-CURL_RATE * dt));
+    arm.plantAmt += ((arm.anchor ? 1 : 0) - arm.plantAmt) * (1 - Math.exp(-CURL_RATE * dt));
+
     renderArm(arm);
+  }
+
+  // Procedural grab poses: fingers curl inward around the object, or splay down to plant
+  function renderClaw(arm) {
+    const d = _clawD.copy(arm.clawDir).lerp(DOWN, arm.plantAmt).normalize();
+    const palmEnd = _t.copy(arm.wrist).addScaledVector(arm.clawDir, PALM_LEN);
+    arm.claw.position.copy(palmEnd);
+    arm.claw.scale.setScalar(CLAW_R * (arm.curl * 0.2 + 1));
+
+    // Basis perpendicular to the claw direction, to spread the fingers around
+    _pole.crossVectors(d, UP);
+    if (_pole.lengthSq() < 1e-4) _pole.crossVectors(d, _right);
+    _pole.normalize();
+    _p.crossVectors(d, _pole).normalize();
+
+    const roll = 0.3;
+    for (let i = 0; i < FINGERS; i++) {
+      const phi = (i / FINGERS) * Math.PI * 2 + roll;
+      // Outward spread direction for this finger
+      _h.copy(_pole).multiplyScalar(Math.cos(phi)).addScaledVector(_p, Math.sin(phi));
+      // Bend angles: open fingers fan slightly out, closed fingers curl inward
+      const t1 = THREE.MathUtils.lerp(-0.2, 1.0, arm.curl);
+      const t2 = t1 + THREE.MathUtils.lerp(0.0, 0.9, arm.curl);
+      _mid.copy(d).multiplyScalar(Math.cos(t1)).addScaledVector(_h, -Math.sin(t1)).normalize();
+      const knuckle = _claw.copy(palmEnd).addScaledVector(_mid, FINGER_LEN_1);
+      const f = arm.fingers[i];
+      placeBetween(f.seg1, palmEnd, knuckle, FINGER_R);
+
+      _dir.copy(d).multiplyScalar(Math.cos(t2)).addScaledVector(_h, -Math.sin(t2)).normalize();
+      const fingerTip = _pull.copy(knuckle).addScaledVector(_dir, FINGER_LEN_2);
+      placeBetween(f.seg2, knuckle, fingerTip, FINGER_R * 0.9);
+      f.tip.position.copy(fingerTip);
+      f.tip.scale.setScalar(FINGER_R * 1.3);
+    }
   }
 
   function renderArm(arm) {
@@ -297,8 +363,8 @@ export function createOctopus({ scene, camera, player, bodies, gridTexture }) {
     placeBetween(arm.lower, arm.elbow, arm.wrist, LOWER_R);
 
     arm.jWrist.position.copy(arm.wrist);
-    arm.jWrist.scale.setScalar(LOWER_R * 1.2);
-    placeBetween(arm.claw, arm.wrist, arm.clawTip, CLAW_R * (arm.grabbed || arm.anchor ? 1.4 : 1));
+    arm.jWrist.scale.setScalar(LOWER_R * 0.7);
+    renderClaw(arm);
   }
 
   // Winch and lift from planted arms
