@@ -23,7 +23,6 @@ const BACKGROUND = 0x1d2026;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(BACKGROUND);
-// Fog hides the edge of the floor and gives the grid an endless horizon.
 scene.fog = new THREE.Fog(BACKGROUND, 25, 140);
 
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 250);
@@ -40,8 +39,6 @@ scene.add(sun);
 
 // ---------------------------------------------------------------------------
 // Unity-style default grid texture (procedural, no downloads).
-// Light grey tile with a darker seam line on every edge, so tiling produces
-// a grid line at each tile boundary.
 // ---------------------------------------------------------------------------
 function makeGridTexture(repeat = 1) {
   const size = 256;
@@ -52,7 +49,6 @@ function makeGridTexture(repeat = 1) {
   ctx.fillStyle = '#c7c7c7';
   ctx.fillRect(0, 0, size, size);
 
-  // Faint half-tile guides, like Unity's default grid
   ctx.strokeStyle = '#b4b4b4';
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -60,7 +56,6 @@ function makeGridTexture(repeat = 1) {
   ctx.moveTo(0, size / 2); ctx.lineTo(size, size / 2);
   ctx.stroke();
 
-  // Seam border: 2px on each side of the edge, so 4px where tiles meet
   ctx.strokeStyle = '#8c8c8c';
   ctx.lineWidth = 4;
   ctx.strokeRect(0, 0, size, size);
@@ -74,14 +69,10 @@ function makeGridTexture(repeat = 1) {
   return texture;
 }
 
-// Shared texture for every object (one tile per UV unit, as in Unity)
 const objectGridTexture = makeGridTexture(1);
 
 // ---------------------------------------------------------------------------
-// Infinite floor
-// A large plane that follows the player, snapped to whole metres. With one
-// texture tile per metre and an even plane size, the grid lines stay fixed in
-// world space while the plane moves underneath. Fog fades the edge out.
+// Infinite floor (follows the player, snapped to whole metres)
 // ---------------------------------------------------------------------------
 const FLOOR_SIZE = 600; // even, so tile seams land on whole metres
 
@@ -98,20 +89,65 @@ function updateFloor() {
 }
 
 // ---------------------------------------------------------------------------
-// Test objects
-// Geometry is normalised so the origin sits at the bottom-centre of each
-// object, which makes floor contact simple (position.y === 0 means resting).
+// Physics constants
 // ---------------------------------------------------------------------------
-const objects = [];
+const GRAVITY = 9.8;
+const AIR_DRAG = 0.05;          // per second, exponential
+const RESTITUTION = 0.3;        // bounciness between bodies
+const RESTITUTION_GROUND = 0.35;
+const FRICTION = 0.4;           // Coulomb friction coefficient between bodies
+const GROUND_FRICTION = 6;      // per second, exponential, on the floor
+const PHYSICS_STEP = 1 / 120;   // fixed sub-step for stability
+const MAX_STEPS_PER_FRAME = 8;
+const SLOP = 0.001;             // allowed penetration before correction
+const CORRECTION = 0.8;         // fraction of penetration corrected per step
 
-function makeObject({ geometry, color, x, z, scale = 1, isStatic = false }) {
+const TRAIL_POINTS = 40;
+const TRAIL_LIFE = 0.45;        // seconds
+const TRAIL_MIN_SPEED = 0.8;    // m/s before a trail starts drawing
+
+const trailVertexShader = /* glsl */ `
+  attribute float alpha;
+  varying float vAlpha;
+  void main() {
+    vAlpha = alpha;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+const trailFragmentShader = /* glsl */ `
+  uniform vec3 uColor;
+  varying float vAlpha;
+  void main() {
+    gl_FragColor = vec4(uColor, vAlpha);
+  }
+`;
+
+
+// ---------------------------------------------------------------------------
+// Bodies
+//   Dynamic test objects: { mesh, shape, mass, invMass, vel, state, ... }
+//     state 'free'  : simulated (gravity, collisions)
+//     state 'zoom'  : kinematic, flying into a hand
+//     state 'held'  : kinematic, parented to a controller
+//   Kinematic colliders (hands): { kin: true, shape: 'sphere', center, vel, ... }
+//
+// Shapes are axis-aligned and ignore rotation: spheres or boxes.
+// ---------------------------------------------------------------------------
+const bodies = [];
+const kinematics = [];
+
+function makeBody({ geometry, color, x, z, shape, mass = 1 }) {
   geometry.computeBoundingBox();
   const bb = geometry.boundingBox;
   geometry.translate(-(bb.min.x + bb.max.x) / 2, -bb.min.y, -(bb.min.z + bb.max.z) / 2);
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
 
-  const height = (geometry.boundingBox.max.y - geometry.boundingBox.min.y) * scale;
+  const size = new THREE.Vector3();
+  geometry.boundingBox.getSize(size);
+  const localCenter = new THREE.Vector3(0, size.y / 2, 0);
+  const localHalf = size.clone().multiplyScalar(0.5);
+
   const material = new THREE.MeshStandardMaterial({
     color,
     map: objectGridTexture,
@@ -119,71 +155,333 @@ function makeObject({ geometry, color, x, z, scale = 1, isStatic = false }) {
     metalness: 0.1,
   });
   const mesh = new THREE.Mesh(geometry, material);
-  mesh.scale.setScalar(scale);
   mesh.position.set(x, 0, z);
-  mesh.userData = {
-    home: mesh.position.clone(),
-    isStatic,
-    held: false,
-    vel: new THREE.Vector3(),
-    center: new THREE.Vector3(0, height / 2, 0), // local-space centre for proximity grabs
-    radius: geometry.boundingSphere.radius * scale,
-  };
-
   scene.add(mesh);
-  objects.push(mesh);
-  return mesh;
+
+  const body = {
+    mesh,
+    shape,                                     // 'sphere' | 'box'
+    localR: Math.max(localHalf.x, localHalf.y, localHalf.z), // sphere radius
+    localHalf,
+    localCenter,
+    center: new THREE.Vector3(),              // world, refreshed each step
+    r: 0,                                     // world radius (sphere)
+    half: new THREE.Vector3(),                // world half extents (box)
+    mass,
+    invMass: 1 / mass,
+    vel: new THREE.Vector3(),
+    state: 'free',
+    home: mesh.position.clone(),
+    color,
+    hand: null,
+    zoom: null,
+    trail: createTrail(color),
+  };
+  bodies.push(body);
+  return body;
 }
 
 // Dynamic test objects, in a row in front of the start position
-makeObject({ geometry: new THREE.BoxGeometry(0.3, 0.3, 0.3), color: 0xff6b6b, x: -1.2, z: -1.5 });
-makeObject({ geometry: new THREE.SphereGeometry(0.18, 32, 16), color: 0x4dabf7, x: -0.6, z: -1.5 });
-makeObject({ geometry: new THREE.CylinderGeometry(0.15, 0.15, 0.4, 32), color: 0xffd43b, x: 0, z: -1.5 });
-makeObject({ geometry: new THREE.ConeGeometry(0.18, 0.4, 32), color: 0x69db7c, x: 0.6, z: -1.5 });
-makeObject({ geometry: new THREE.TorusGeometry(0.15, 0.05, 16, 48).rotateX(Math.PI / 2), color: 0xda77f2, x: 1.2, z: -1.5 });
-makeObject({ geometry: new THREE.OctahedronGeometry(0.2), color: 0xffa94d, x: -0.4, z: -2.4 });
-makeObject({ geometry: new THREE.BoxGeometry(0.2, 0.2, 0.2), color: 0x3bc9db, x: 0.4, z: -2.4 });
+makeBody({ geometry: new THREE.BoxGeometry(0.3, 0.3, 0.3), color: 0xff6b6b, x: -1.2, z: -1.5, shape: 'box', mass: 1 });
+makeBody({ geometry: new THREE.SphereGeometry(0.18, 32, 16), color: 0x4dabf7, x: -0.6, z: -1.5, shape: 'sphere', mass: 1 });
+makeBody({ geometry: new THREE.CylinderGeometry(0.15, 0.15, 0.4, 32), color: 0xffd43b, x: 0, z: -1.5, shape: 'box', mass: 1.5 });
+makeBody({ geometry: new THREE.ConeGeometry(0.18, 0.4, 32), color: 0x69db7c, x: 0.6, z: -1.5, shape: 'box', mass: 1 });
+makeBody({ geometry: new THREE.TorusGeometry(0.15, 0.05, 16, 48).rotateX(Math.PI / 2), color: 0xda77f2, x: 1.2, z: -1.5, shape: 'box', mass: 0.8 });
+makeBody({ geometry: new THREE.OctahedronGeometry(0.2), color: 0xffa94d, x: -0.4, z: -2.4, shape: 'sphere', mass: 1 });
+makeBody({ geometry: new THREE.BoxGeometry(0.2, 0.2, 0.2), color: 0x3bc9db, x: 0.4, z: -2.4, shape: 'box', mass: 0.5 });
 
-// Static scale references
-makeObject({ geometry: new THREE.BoxGeometry(1, 1, 1), color: 0x9aa0a6, x: 2.2, z: -2.2, isStatic: true });
-makeObject({ geometry: new THREE.BoxGeometry(0.3, 2, 0.3), color: 0x6c757d, x: -2.4, z: -2.6, isStatic: true });
+// Reference blocks: heavy, so they barely budge when hit
+makeBody({ geometry: new THREE.BoxGeometry(1, 1, 1), color: 0x9aa0a6, x: 2.2, z: -2.2, shape: 'box', mass: 30 });
+makeBody({ geometry: new THREE.BoxGeometry(0.3, 2, 0.3), color: 0x6c757d, x: -2.4, z: -2.6, shape: 'box', mass: 8 });
 
-const dynamicObjects = objects.filter((o) => !o.userData.isStatic);
+const meshes = bodies.map((b) => b.mesh);
 
-function resetObjects() {
-  for (const obj of objects) {
-    if (obj.userData.held) continue;
-    obj.position.copy(obj.userData.home);
-    obj.userData.vel.set(0, 0, 0);
+// Refresh a dynamic body's world-space collider from its mesh
+const _worldCenterTmp = new THREE.Vector3();
+function refreshBody(b) {
+  const s = b.mesh.scale.x;
+  b.mesh.updateWorldMatrix(true, false);
+  b.center.copy(b.localCenter);
+  b.mesh.localToWorld(b.center);
+  b.r = b.localR * s;
+  b.half.copy(b.localHalf).multiplyScalar(s);
+}
+
+// ---------------------------------------------------------------------------
+// Collision detection (sphere/sphere, box/box, sphere/box)
+// Normal points from A to B. Returns penetration depth (0 if none).
+// ---------------------------------------------------------------------------
+const _n = new THREE.Vector3();
+const _d = new THREE.Vector3();
+const _q = new THREE.Vector3();
+
+// Sphere (center c, radius r) against box b. Writes normal box->sphere into _n.
+function sphereVsBox(c, r, b) {
+  _q.set(
+    THREE.MathUtils.clamp(c.x, b.center.x - b.half.x, b.center.x + b.half.x),
+    THREE.MathUtils.clamp(c.y, b.center.y - b.half.y, b.center.y + b.half.y),
+    THREE.MathUtils.clamp(c.z, b.center.z - b.half.z, b.center.z + b.half.z)
+  );
+  _d.subVectors(c, _q);
+  const dist = _d.length();
+
+  if (dist > 1e-6) {
+    if (dist >= r) return 0;
+    _n.copy(_d).divideScalar(dist);
+    return r - dist;
+  }
+
+  // Sphere centre inside the box: push out along the shallowest axis
+  const px = b.half.x - Math.abs(c.x - b.center.x);
+  const py = b.half.y - Math.abs(c.y - b.center.y);
+  const pz = b.half.z - Math.abs(c.z - b.center.z);
+  if (px <= py && px <= pz) {
+    _n.set(Math.sign(c.x - b.center.x) || 1, 0, 0);
+    return px + r;
+  }
+  if (py <= pz) {
+    _n.set(0, Math.sign(c.y - b.center.y) || 1, 0);
+    return py + r;
+  }
+  _n.set(0, 0, Math.sign(c.z - b.center.z) || 1);
+  return pz + r;
+}
+
+// Returns penetration depth; on contact, _n holds the normal from a to b.
+function contact(a, b) {
+  if (a.shape === 'sphere' && b.shape === 'sphere') {
+    _n.subVectors(b.center, a.center);
+    const dist = _n.length();
+    const rs = a.r + b.r;
+    if (dist >= rs) return 0;
+    if (dist < 1e-6) _n.set(0, 1, 0);
+    else _n.divideScalar(dist);
+    return rs - dist;
+  }
+
+  if (a.shape === 'box' && b.shape === 'box') {
+    const dx = b.center.x - a.center.x;
+    const dy = b.center.y - a.center.y;
+    const dz = b.center.z - a.center.z;
+    const ox = a.half.x + b.half.x - Math.abs(dx);
+    if (ox <= 0) return 0;
+    const oy = a.half.y + b.half.y - Math.abs(dy);
+    if (oy <= 0) return 0;
+    const oz = a.half.z + b.half.z - Math.abs(dz);
+    if (oz <= 0) return 0;
+    if (ox <= oy && ox <= oz) { _n.set(Math.sign(dx) || 1, 0, 0); return ox; }
+    if (oy <= oz) { _n.set(0, Math.sign(dy) || 1, 0); return oy; }
+    _n.set(0, 0, Math.sign(dz) || 1);
+    return oz;
+  }
+
+  if (a.shape === 'sphere' && b.shape === 'box') {
+    const depth = sphereVsBox(a.center, a.r, b); // _n: box -> sphere
+    _n.negate();                                 // now a -> b
+    return depth;
+  }
+
+  // a box, b sphere
+  const depth = sphereVsBox(b.center, b.r, a);   // _n: box(a) -> sphere(b) = a -> b
+  return depth;
+}
+
+// ---------------------------------------------------------------------------
+// Impulse resolution between two bodies
+// ---------------------------------------------------------------------------
+const _rel = new THREE.Vector3();
+const _tan = new THREE.Vector3();
+
+function resolvePair(a, b) {
+  const invSum = a.invMass + b.invMass;
+  if (invSum === 0) return;
+
+  const depth = contact(a, b);
+  if (depth <= 0) return;
+
+  const n = _n;
+
+  // Positional correction (only moves non-kinematic bodies, via invMass)
+  const corr = (Math.max(depth - SLOP, 0) * CORRECTION) / invSum;
+  if (a.invMass > 0) {
+    a.mesh.position.addScaledVector(n, -corr * a.invMass);
+    a.center.addScaledVector(n, -corr * a.invMass);
+  }
+  if (b.invMass > 0) {
+    b.mesh.position.addScaledVector(n, corr * b.invMass);
+    b.center.addScaledVector(n, corr * b.invMass);
+  }
+
+  // Relative velocity along the normal (B relative to A)
+  _rel.subVectors(b.vel, a.vel);
+  const vn = _rel.dot(n);
+  if (vn >= 0) return; // already separating
+
+  // Normal impulse
+  const e = Math.min(RESTITUTION, 1);
+  const j = (-(1 + e) * vn) / invSum;
+  a.vel.addScaledVector(n, -j * a.invMass);
+  b.vel.addScaledVector(n, j * b.invMass);
+
+  // Friction impulse along the tangent
+  _tan.copy(_rel).addScaledVector(n, -vn);
+  const tLen = _tan.length();
+  if (tLen > 1e-6) {
+    _tan.divideScalar(tLen);
+    const jt = Math.min(tLen / invSum, FRICTION * j);
+    a.vel.addScaledVector(_tan, jt * a.invMass);
+    b.vel.addScaledVector(_tan, -jt * b.invMass);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Physics-lite: gravity, floor bounce, friction
+// Physics step
 // ---------------------------------------------------------------------------
-const GRAVITY = 9.8;
+let activeList = [];
 
-function updatePhysics(dt) {
-  if (dt <= 0) return;
-  for (const obj of dynamicObjects) {
-    const u = obj.userData;
-    if (u.held) continue;
+function physicsStep(h) {
+  // 1. Integrate free bodies
+  for (const b of bodies) {
+    if (b.state !== 'free') continue;
+    b.vel.y -= GRAVITY * h;
+    b.vel.multiplyScalar(Math.exp(-AIR_DRAG * h));
+    b.mesh.position.addScaledVector(b.vel, h);
+  }
 
-    u.vel.y -= GRAVITY * dt;
-    obj.position.addScaledVector(u.vel, dt);
+  // 2. Refresh colliders
+  for (const b of bodies) refreshBody(b);
 
-    if (obj.position.y < 0) {
-      obj.position.y = 0;
-      if (u.vel.y < -0.3) {
-        u.vel.y *= -0.35; // bounce
-      } else {
-        u.vel.y = 0;
+  // 3. Collisions (two passes for stacks)
+  for (let iter = 0; iter < 2; iter++) {
+    for (let i = 0; i < activeList.length; i++) {
+      for (let j = i + 1; j < activeList.length; j++) {
+        resolvePair(activeList[i], activeList[j]);
       }
-      const friction = Math.exp(-6 * dt);
-      u.vel.x *= friction;
-      u.vel.z *= friction;
     }
   }
+
+  // 4. Floor
+  for (const b of bodies) {
+    if (b.state !== 'free') continue;
+    const extentY = b.shape === 'sphere' ? b.r : b.half.y;
+    const minY = b.center.y - extentY;
+    if (minY < 0) {
+      b.mesh.position.y -= minY;
+      b.center.y -= minY;
+      if (b.vel.y < -0.5) b.vel.y *= -RESTITUTION_GROUND;
+      else b.vel.y = 0;
+      const f = Math.exp(-GROUND_FRICTION * h);
+      b.vel.x *= f;
+      b.vel.z *= f;
+      if (b.vel.lengthSq() < 0.0004) b.vel.set(0, 0, 0); // settle
+    }
+  }
+}
+
+function stepPhysics(dt, accumulator) {
+  let acc = accumulator + dt;
+  let steps = 0;
+  while (acc >= PHYSICS_STEP && steps < MAX_STEPS_PER_FRAME) {
+    physicsStep(PHYSICS_STEP);
+    acc -= PHYSICS_STEP;
+    steps++;
+  }
+  if (steps === MAX_STEPS_PER_FRAME) acc = 0;
+  return acc;
+}
+
+// ---------------------------------------------------------------------------
+// Trails
+// Ribbon with per-vertex alpha that fades toward the tail, drawn additively.
+// ---------------------------------------------------------------------------
+function createTrail(color) {
+  const segs = TRAIL_POINTS - 1;
+  const positions = new Float32Array(segs * 6 * 3);
+  const alphas = new Float32Array(segs * 6);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('alpha', new THREE.BufferAttribute(alphas, 1));
+  const material = new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.5) } },
+    vertexShader: trailVertexShader,
+    fragmentShader: trailFragmentShader,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  scene.add(mesh);
+  return { mesh, geometry, positions, alphas, points: [] };
+}
+
+const _trailDir = new THREE.Vector3();
+const _trailMid = new THREE.Vector3();
+const _trailSide = new THREE.Vector3();
+const _camPos = new THREE.Vector3();
+
+function updateTrail(b, now, moving) {
+  const tr = b.trail;
+  if (moving) {
+    tr.points.push({ p: b.center.clone(), t: now });
+    if (tr.points.length > TRAIL_POINTS) tr.points.shift();
+  }
+  while (tr.points.length && now - tr.points[0].t > TRAIL_LIFE) tr.points.shift();
+
+  const pts = tr.points;
+  if (pts.length < 2) {
+    tr.mesh.visible = false;
+    return;
+  }
+
+  const baseWidth = Math.max(0.02, (b.shape === 'sphere' ? b.r : Math.min(b.half.x, b.half.y, b.half.z)) * 0.7);
+  const fade = (p) => Math.max(0, 1 - (now - p.t) / TRAIL_LIFE);
+
+  let v = 0;
+  const pos = tr.positions;
+  const alp = tr.alphas;
+  const put = (x, y, z, a) => {
+    pos[v * 3] = x; pos[v * 3 + 1] = y; pos[v * 3 + 2] = z;
+    alp[v] = a;
+    v++;
+  };
+
+  for (let i = 0; i < pts.length - 1; i++) {
+    const A = pts[i];
+    const B = pts[i + 1];
+    const fa = fade(A);
+    const fb = fade(B);
+    const wa = baseWidth * fa;
+    const wb = baseWidth * fb;
+    const aa = fa * 0.9;
+    const ab = fb * 0.9;
+
+    // Billboard the ribbon toward the camera
+    _trailDir.subVectors(B.p, A.p);
+    _trailMid.addVectors(A.p, B.p).multiplyScalar(0.5);
+    _trailSide.subVectors(_camPos, _trailMid).cross(_trailDir);
+    if (_trailSide.lengthSq() < 1e-8) _trailSide.set(0, 1, 0).cross(_trailDir);
+    _trailSide.normalize();
+
+    const a1 = { x: A.p.x + _trailSide.x * wa, y: A.p.y + _trailSide.y * wa, z: A.p.z + _trailSide.z * wa };
+    const a2 = { x: A.p.x - _trailSide.x * wa, y: A.p.y - _trailSide.y * wa, z: A.p.z - _trailSide.z * wa };
+    const b1 = { x: B.p.x + _trailSide.x * wb, y: B.p.y + _trailSide.y * wb, z: B.p.z + _trailSide.z * wb };
+    const b2 = { x: B.p.x - _trailSide.x * wb, y: B.p.y - _trailSide.y * wb, z: B.p.z - _trailSide.z * wb };
+
+    put(a1.x, a1.y, a1.z, aa);
+    put(a2.x, a2.y, a2.z, aa);
+    put(b1.x, b1.y, b1.z, ab);
+    put(a2.x, a2.y, a2.z, aa);
+    put(b2.x, b2.y, b2.z, ab);
+    put(b1.x, b1.y, b1.z, ab);
+  }
+
+  tr.geometry.setDrawRange(0, v);
+  tr.geometry.attributes.position.needsUpdate = true;
+  tr.geometry.attributes.alpha.needsUpdate = true;
+  tr.mesh.visible = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +492,6 @@ const rayGeometry = new THREE.BufferGeometry().setFromPoints([
   new THREE.Vector3(0, 0, -1.5),
 ]);
 
-// Bone chains per finger (wrist is prepended at runtime)
 const FINGER_CHAINS = [
   ['thumb-metacarpal', 'thumb-phalanx-proximal', 'thumb-phalanx-distal', 'thumb-tip'],
   ['index-finger-metacarpal', 'index-finger-phalanx-proximal', 'index-finger-phalanx-intermediate', 'index-finger-phalanx-distal', 'index-finger-tip'],
@@ -208,7 +505,6 @@ for (const chain of FINGER_CHAINS) {
   const full = ['wrist', ...chain];
   for (let i = 0; i < full.length - 1; i++) BONE_SEGMENTS.push([full[i], full[i + 1]]);
 }
-// Palm cross-links between metacarpals
 BONE_SEGMENTS.push(
   ['index-finger-metacarpal', 'middle-finger-metacarpal'],
   ['middle-finger-metacarpal', 'ring-finger-metacarpal'],
@@ -218,6 +514,10 @@ BONE_SEGMENTS.push(
 const jointGeometry = new THREE.SphereGeometry(1, 12, 8);
 const tmpWorld = new THREE.Vector3();
 const tmpB = new THREE.Vector3();
+const _anchor = new THREE.Vector3();
+const _anchorTip = new THREE.Vector3();
+const _target = new THREE.Vector3();
+const _offset = new THREE.Vector3();
 
 const hands = [0, 1].map((i) => {
   const color = i === 0 ? 0x4fc3ff : 0xff8a4f;
@@ -226,14 +526,12 @@ const hands = [0, 1].map((i) => {
   const grip = renderer.xr.getControllerGrip(i);
   const hand = renderer.xr.getHand(i);
 
-  // Pointing ray (lines can't use the grid texture)
   const ray = new THREE.Line(
     rayGeometry,
     new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.6 })
   );
   controller.add(ray);
 
-  // Simple controller body
   const body = new THREE.Mesh(
     new THREE.CylinderGeometry(0.018, 0.018, 0.12, 12),
     new THREE.MeshStandardMaterial({ color: 0xffffff, map: objectGridTexture, roughness: 0.6 })
@@ -241,35 +539,43 @@ const hands = [0, 1].map((i) => {
   body.rotation.x = Math.PI / 2;
   grip.add(body);
 
-  // Input objects live under the player so they move with locomotion
   player.add(controller, grip, hand);
 
-  return {
+  const rig = {
     index: i,
     color,
     controller,
     grip,
     hand,
-    held: null,
-    prev: new THREE.Vector3(),
+    connected: false,
+    held: null,           // body currently zooming or held by this hand
+    prevPos: new THREE.Vector3(),
     vel: new THREE.Vector3(),
     hasPrev: false,
     built: false,
     lines: null,
     positions: null,
+    kinJoints: new Map(),
+    kinController: { kin: true, shape: 'sphere', r: 0.04, center: new THREE.Vector3(), vel: new THREE.Vector3(), prev: new THREE.Vector3(), invMass: 0, active: false, hasPrev: false },
   };
+
+  controller.addEventListener('connected', () => { rig.connected = true; });
+  controller.addEventListener('disconnected', () => { rig.connected = false; });
+  controller.addEventListener('selectstart', () => onGrabStart(rig));
+  controller.addEventListener('selectend', () => onGrabEnd(rig));
+
+  return rig;
 });
 
-// Adds sphere markers to each hand joint (joints are created by three.js on
-// hand-tracking connect) and a LineSegments for bones.
-function buildHandVisuals(hand) {
-  const joints = hand.hand.joints;
+// Joint markers, bone lines, and kinematic physics colliders for the hand.
+function buildHandVisuals(rig) {
+  const joints = rig.hand.joints;
   if (!joints || Object.keys(joints).length === 0) return;
 
   const material = new THREE.MeshStandardMaterial({
-    color: hand.color,
+    color: rig.color,
     map: objectGridTexture,
-    emissive: hand.color,
+    emissive: rig.color,
     emissiveIntensity: 0.25,
     roughness: 0.4,
   });
@@ -278,31 +584,37 @@ function buildHandVisuals(hand) {
     const r = name === 'wrist' ? 0.012 : name.endsWith('tip') ? 0.007 : 0.009;
     const marker = new THREE.Mesh(jointGeometry, material);
     marker.scale.setScalar(r);
-    joints[name].add(marker); // child inherits joint visibility from three.js
+    joints[name].add(marker);
+
+    rig.kinJoints.set(name, {
+      kin: true, shape: 'sphere', r: r * 1.1,
+      center: new THREE.Vector3(), vel: new THREE.Vector3(), prev: new THREE.Vector3(),
+      invMass: 0, active: false, hasPrev: false,
+    });
   }
 
-  hand.positions = new Float32Array(BONE_SEGMENTS.length * 6);
+  rig.positions = new Float32Array(BONE_SEGMENTS.length * 6);
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(hand.positions, 3));
-  hand.lines = new THREE.LineSegments(
+  geometry.setAttribute('position', new THREE.BufferAttribute(rig.positions, 3));
+  rig.lines = new THREE.LineSegments(
     geometry,
-    new THREE.LineBasicMaterial({ color: hand.color, transparent: true, opacity: 0.8 })
+    new THREE.LineBasicMaterial({ color: rig.color, transparent: true, opacity: 0.8 })
   );
-  hand.lines.frustumCulled = false;
-  scene.add(hand.lines);
+  rig.lines.frustumCulled = false;
+  scene.add(rig.lines);
 
-  hand.built = true;
+  rig.built = true;
 }
 
-function updateHandBones(hand) {
-  const joints = hand.hand.joints;
+function updateHandBones(rig) {
+  const joints = rig.hand.joints;
   const wrist = joints && joints.wrist;
-  if (!wrist || !hand.lines) return;
+  if (!wrist || !rig.lines) return;
 
-  hand.lines.visible = wrist.visible;
+  rig.lines.visible = wrist.visible;
   if (!wrist.visible) return;
 
-  const pos = hand.positions;
+  const pos = rig.positions;
   for (let s = 0; s < BONE_SEGMENTS.length; s++) {
     const [a, b] = BONE_SEGMENTS[s];
     const ja = joints[a];
@@ -317,18 +629,66 @@ function updateHandBones(hand) {
       pos[o + 3] = tmpWorld.x; pos[o + 4] = tmpWorld.y; pos[o + 5] = tmpWorld.z;
     }
   }
-  hand.lines.geometry.attributes.position.needsUpdate = true;
+  rig.lines.geometry.attributes.position.needsUpdate = true;
+}
+
+// Update kinematic colliders for a hand from its tracked joints (or controller).
+function updateHandColliders(rig, dt) {
+  const joints = rig.hand.joints;
+  const tracked = !!(joints && joints.wrist && joints.wrist.visible);
+
+  for (const [name, kb] of rig.kinJoints) {
+    const joint = joints[name];
+    const on = tracked && joint && joint.visible;
+    kb.active = on;
+    if (!on) { kb.hasPrev = false; continue; }
+    joint.getWorldPosition(kb.center);
+    if (kb.hasPrev && dt > 0) {
+      kb.vel.copy(kb.center).sub(kb.prev).divideScalar(dt);
+    } else {
+      kb.vel.set(0, 0, 0);
+    }
+    kb.prev.copy(kb.center);
+    kb.hasPrev = true;
+  }
+
+  // Controller collider when no hand is tracked
+  const kc = rig.kinController;
+  kc.active = !tracked && rig.connected && renderer.xr.isPresenting;
+  if (kc.active) {
+    rig.controller.getWorldPosition(kc.center);
+    if (kc.hasPrev && dt > 0) kc.vel.copy(kc.center).sub(kc.prev).divideScalar(dt);
+    else kc.vel.set(0, 0, 0);
+    kc.prev.copy(kc.center);
+    kc.hasPrev = true;
+  } else {
+    kc.hasPrev = false;
+  }
+}
+
+// Pinch point: midpoint of index and thumb tips, or a point in front of the controller
+function getAnchor(rig, out) {
+  const joints = rig.hand.joints;
+  const index = joints && joints['index-finger-tip'];
+  const thumb = joints && joints['thumb-tip'];
+  if (index && thumb && index.visible && thumb.visible) {
+    index.getWorldPosition(out);
+    thumb.getWorldPosition(_anchorTip);
+    return out.add(_anchorTip).multiplyScalar(0.5);
+  }
+  rig.controller.getWorldPosition(out);
+  rig.controller.updateWorldMatrix(true, false);
+  _offset.set(0, 0, -1).transformDirection(rig.controller.matrixWorld).multiplyScalar(0.05);
+  return out.add(_offset);
 }
 
 // ---------------------------------------------------------------------------
-// Grabbing: controller trigger / hand pinch (both fire select events)
+// Grabbing: pick a body, zoom it into the hand, then hold it
 // ---------------------------------------------------------------------------
 const raycaster = new THREE.Raycaster();
 raycaster.far = 3;
 const rayDir = new THREE.Vector3();
 
-// Aim the raycaster along the controller's -Z axis (same as the pointing ray).
-// Raycaster.setFromXRController isn't available in three r160, so do it by hand.
 function setRayFromController(controller) {
   controller.updateWorldMatrix(true, false);
   raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
@@ -336,69 +696,124 @@ function setRayFromController(controller) {
   raycaster.ray.direction.copy(rayDir);
 }
 
-function grab(hand) {
-  if (hand.held) return;
+const ZOOM_DURATION = 0.32; // seconds
+
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function onGrabStart(rig) {
+  if (rig.held) return;
 
   let target = null;
 
   // 1. Ray hit
-  setRayFromController(hand.controller);
-  const hit = raycaster.intersectObjects(objects, false)[0];
-  if (hit && !hit.object.userData.isStatic) {
-    target = hit.object;
+  setRayFromController(rig.controller);
+  const hit = raycaster.intersectObjects(meshes, false)[0];
+  if (hit) {
+    target = bodies.find((b) => b.mesh === hit.object) || null;
   }
 
   // 2. Proximity fallback (useful for hands)
   if (!target) {
-    hand.controller.getWorldPosition(tmpWorld);
+    rig.controller.getWorldPosition(tmpWorld);
     let best = 0.15;
-    for (const obj of dynamicObjects) {
-      tmpB.copy(obj.userData.center);
-      obj.localToWorld(tmpB);
-      const d = tmpB.distanceTo(tmpWorld);
+    for (const b of bodies) {
+      refreshBody(b);
+      const d = b.center.distanceTo(tmpWorld);
       if (d < best) {
         best = d;
-        target = obj;
+        target = b;
       }
     }
   }
 
-  if (!target) return;
+  if (!target || target.state !== 'free') return;
 
-  hand.held = target;
-  target.userData.held = true;
-  target.userData.vel.set(0, 0, 0);
-  hand.controller.attach(target); // keeps world transform
+  rig.held = target;
+  target.state = 'zoom';
+  target.hand = rig;
+  target.invMass = 0;
+  target.zoom = { t: 0, start: target.mesh.position.clone() };
 }
 
-function release(hand) {
-  const obj = hand.held;
-  if (!obj) return;
+// Frame update for a body flying into the hand
+function updateZoom(rig, dt) {
+  const b = rig.held;
+  const z = b.zoom;
+  z.t = Math.min(1, z.t + dt / ZOOM_DURATION);
+  const e = easeInOutCubic(z.t);
 
-  hand.held = null;
-  scene.attach(obj); // back to scene, keeps world transform
-  obj.userData.held = false;
+  getAnchor(rig, _anchor);
+  // Mesh origin is at the bottom; put the object's centre on the anchor
+  _offset.copy(b.localCenter).multiplyScalar(b.mesh.scale.x);
+  _target.copy(_anchor).sub(_offset);
+
+  // Lerp with a small arc so it reads as a zoom, not a slide
+  const prev = b.mesh.position.clone();
+  b.mesh.position.lerpVectors(z.start, _target, e);
+  b.mesh.position.y += Math.sin(Math.PI * e) * 0.12 * (1 - e);
+
+  // Kinematic velocity for collisions
+  if (dt > 0) b.vel.copy(b.mesh.position).sub(prev).divideScalar(dt);
+
+  if (z.t >= 1) {
+    rig.controller.attach(b.mesh); // keeps world transform: centre sits on the pinch
+    b.state = 'held';
+    b.zoom = null;
+  }
+}
+
+function onGrabEnd(rig) {
+  const b = rig.held;
+  if (!b) return;
+
+  rig.held = null;
+  if (b.state === 'held') {
+    scene.attach(b.mesh); // keep world transform
+  }
+  b.state = 'free';
+  b.hand = null;
+  b.zoom = null;
+  b.invMass = 1 / b.mass;
 
   // Throw with the hand's recent velocity (clamped)
-  obj.userData.vel.copy(hand.vel);
-  if (obj.userData.vel.length() > 8) obj.userData.vel.setLength(8);
+  b.vel.copy(rig.vel);
+  if (b.vel.length() > 8) b.vel.setLength(8);
 }
 
-hands.forEach((hand) => {
-  hand.controller.addEventListener('selectstart', () => grab(hand));
-  hand.controller.addEventListener('selectend', () => release(hand));
-});
+// ---------------------------------------------------------------------------
+// Reset
+// ---------------------------------------------------------------------------
+function resetObjects() {
+  for (const rig of hands) {
+    if (rig.held) {
+      if (rig.held.state === 'held') scene.attach(rig.held.mesh);
+      rig.held.state = 'free';
+      rig.held.hand = null;
+      rig.held.zoom = null;
+      rig.held.invMass = 1 / rig.held.mass;
+      rig.held = null;
+    }
+  }
+  for (const b of bodies) {
+    b.state = 'free';
+    b.invMass = 1 / b.mass;
+    b.mesh.position.copy(b.home);
+    b.vel.set(0, 0, 0);
+    b.trail.points.length = 0;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Movement
-//   Desktop: WASD / arrows to walk (Shift to run), Q/E to turn,
-//            left-drag to look, R to reset objects.
-//   VR:      left stick to walk (relative to head yaw), right stick to turn.
+//   Desktop: WASD / arrows walk (Shift run), Q/E turn, drag to look, R reset.
+//   VR:      left stick walk relative to head yaw, right stick smooth turn.
 // ---------------------------------------------------------------------------
 const WALK_SPEED = 2.5;
 const RUN_SPEED = 5;
 const DESKTOP_TURN_SPEED = 1.7; // rad/s
-const STICK_TURN_SPEED = 1.7;   // rad/s, smooth turn
+const STICK_TURN_SPEED = 1.7;   // rad/s
 const DEADZONE = 0.15;
 
 const keys = new Set();
@@ -431,11 +846,9 @@ addEventListener('pointermove', (e) => {
 
 function applyDeadzone(v) {
   if (Math.abs(v) < DEADZONE) return 0;
-  return Math.sign(v) * (Math.abs(v) - DEADZONE) / (1 - DEADZONE);
+  return (Math.sign(v) * (Math.abs(v) - DEADZONE)) / (1 - DEADZONE);
 }
 
-// Reads thumbsticks from the XR session. Left = move, right = turn.
-// Quest/most controllers expose sticks on axes[2]/[3]; fall back to [0]/[1].
 function readXRSticks() {
   const sticks = { left: { x: 0, y: 0 }, right: { x: 0, y: 0 } };
   const session = renderer.xr.getSession();
@@ -458,7 +871,6 @@ const moveRight = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 const moveDelta = new THREE.Vector3();
 
-// Compute forward/right from the head's yaw (flattened to the ground plane)
 function updateHeadingVectors() {
   camera.updateWorldMatrix(true, false);
   camera.getWorldDirection(moveForward);
@@ -468,18 +880,42 @@ function updateHeadingVectors() {
   moveRight.crossVectors(moveForward, UP).normalize();
 }
 
+// ---------------------------------------------------------------------------
+// Arm swing locomotion (VR)
+// Each hand's speed along the head's forward direction drives walking.
+// Swinging the arms back and forth gives a steady walk; standing still stops.
+// ---------------------------------------------------------------------------
+const ARM_SWING_GAIN = 0.9;      // walk m/s per m/s of average forward hand speed
+const ARM_SWING_DEADZONE = 0.25; // ignore small hand jitter (m/s)
+const ARM_SWING_MAX = 3.0;       // m/s cap
+const ARM_SWING_RESPONSE = 8;    // smoothing (higher = snappier)
+let armSpeed = 0;
+
+function updateArmSwing(dt) {
+  let sum = 0;
+  for (const rig of hands) {
+    // Magnitude, so both forward and back swings count
+    sum += Math.abs(rig.vel.dot(moveForward));
+  }
+  const avg = sum / hands.length;
+  const target = THREE.MathUtils.clamp((avg - ARM_SWING_DEADZONE) * ARM_SWING_GAIN, 0, ARM_SWING_MAX);
+  armSpeed += (target - armSpeed) * (1 - Math.exp(-ARM_SWING_RESPONSE * dt));
+  return armSpeed;
+}
+
 function updateMovement(dt) {
   if (dt <= 0) return;
+  updateHeadingVectors();
 
-  let strafe = 0;   // -1 left .. +1 right
-  let forward = 0;  // -1 back  .. +1 forward
-  let turn = 0;     // -1 left  .. +1 right
+  let strafe = 0;
+  let forward = 0;
+  let turn = 0;
   let speed = WALK_SPEED;
 
   if (renderer.xr.isPresenting) {
     const { left, right } = readXRSticks();
     strafe = applyDeadzone(left.x);
-    forward = -applyDeadzone(left.y); // pushing the stick forward gives negative y
+    forward = -applyDeadzone(left.y);
     turn = applyDeadzone(right.x);
   } else {
     if (keys.has('KeyW') || keys.has('ArrowUp')) forward += 1;
@@ -491,7 +927,6 @@ function updateMovement(dt) {
     if (keys.has('ShiftLeft') || keys.has('ShiftRight')) speed = RUN_SPEED;
   }
 
-  // Normalise diagonals so they aren't faster
   const mag = Math.hypot(strafe, forward);
   if (mag > 1) {
     strafe /= mag;
@@ -502,41 +937,112 @@ function updateMovement(dt) {
     player.rotation.y -= turn * (renderer.xr.isPresenting ? STICK_TURN_SPEED : DESKTOP_TURN_SPEED) * dt;
   }
 
+  const swing = renderer.xr.isPresenting ? updateArmSwing(dt) : 0;
+
   if (strafe !== 0 || forward !== 0) {
-    updateHeadingVectors();
     moveDelta.set(0, 0, 0)
       .addScaledVector(moveForward, forward)
       .addScaledVector(moveRight, strafe);
     player.position.addScaledVector(moveDelta, speed * dt);
+  }
+
+  if (swing > 0) {
+    player.position.addScaledVector(moveForward, swing * dt);
   }
 }
 
 // ---------------------------------------------------------------------------
 // Loop
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Hand gesture: clap both hands together to reset the objects
+// Wrists close together and moving toward each other quickly.
+// ---------------------------------------------------------------------------
+const CLAP_DISTANCE = 0.12;   // m between wrists
+const CLAP_APPROACH = 1.0;    // m/s closing speed
+const CLAP_COOLDOWN = 1.0;    // s
+const _wristA = new THREE.Vector3();
+const _wristB = new THREE.Vector3();
+const _sep = new THREE.Vector3();
+let clapCooldown = 0;
+
+function wristPosition(rig, out) {
+  const wrist = rig.hand.joints && rig.hand.joints.wrist;
+  if (!wrist || !wrist.visible) return false;
+  wrist.getWorldPosition(out);
+  return true;
+}
+
+function checkClapReset(dt) {
+  clapCooldown = Math.max(0, clapCooldown - dt);
+  if (clapCooldown > 0) return;
+
+  const [a, b] = hands;
+  if (!wristPosition(a, _wristA) || !wristPosition(b, _wristB)) return;
+
+  _sep.subVectors(_wristA, _wristB);
+  const d = _sep.length();
+  if (d > CLAP_DISTANCE || d < 1e-6) return;
+
+  // Positive when the hands are closing on each other
+  const closing = -a.vel.clone().sub(b.vel).dot(_sep) / d;
+  if (closing < CLAP_APPROACH) return;
+
+  resetObjects();
+  clapCooldown = CLAP_COOLDOWN;
+}
+
 const clock = new THREE.Clock();
+let elapsed = 0;
+let physicsAccumulator = 0;
 
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
 
   updateMovement(dt);
   updateFloor();
 
-  for (const hand of hands) {
-    // Track hand velocity for throwing (world space)
-    hand.controller.getWorldPosition(tmpWorld);
-    if (hand.hasPrev && dt > 0) {
-      tmpB.copy(tmpWorld).sub(hand.prev).divideScalar(dt);
-      hand.vel.lerp(tmpB, 0.5);
+  // Hands: velocity, visuals, colliders, grab zoom and held velocity
+  for (const rig of hands) {
+    rig.controller.getWorldPosition(tmpWorld);
+    if (rig.hasPrev && dt > 0) {
+      tmpB.copy(tmpWorld).sub(rig.prevPos).divideScalar(dt);
+      rig.vel.lerp(tmpB, 0.5);
     }
-    hand.prev.copy(tmpWorld);
-    hand.hasPrev = true;
+    rig.prevPos.copy(tmpWorld);
+    rig.hasPrev = true;
 
-    if (!hand.built) buildHandVisuals(hand);
-    if (hand.built) updateHandBones(hand);
+    if (!rig.built) buildHandVisuals(rig);
+    if (rig.built) {
+      updateHandBones(rig);
+      updateHandColliders(rig, dt);
+    }
+
+    if (rig.held) {
+      if (rig.held.state === 'zoom') updateZoom(rig, dt);
+      if (rig.held.state === 'held') rig.held.vel.copy(rig.vel);
+    }
   }
 
-  updatePhysics(dt);
+  checkClapReset(dt);
+
+  // Build the list of colliders for this frame
+  activeList = bodies.slice();
+  for (const rig of hands) {
+    for (const kb of rig.kinJoints.values()) if (kb.active) activeList.push(kb);
+    if (rig.kinController.active) activeList.push(rig.kinController);
+  }
+
+  physicsAccumulator = stepPhysics(dt, physicsAccumulator);
+
+  // Trails
+  camera.getWorldPosition(_camPos);
+  for (const b of bodies) {
+    const moving = b.state === 'zoom' || b.vel.length() > TRAIL_MIN_SPEED;
+    updateTrail(b, elapsed, moving);
+  }
+
   renderer.render(scene, camera);
 }
 
