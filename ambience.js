@@ -3,20 +3,19 @@ import * as THREE from 'three';
 // ---------------------------------------------------------------------------
 // Living world: something is always happening, whatever your hands do.
 //
-//   Motes     : glowing particles drift around you. Moving hands scatter them,
-//               and still hands slowly draw them in, so they always orbit.
-//   Wakes     : each hand always trails faint light; it brightens when you move.
-//   Ripples   : rings spread on the floor under moving hands, and pulse under
-//               idle hands every few seconds.
+//   Motes     : a few glowing particles drift around you. Fast hands scatter them.
+//   Wakes     : a hand trails light only while it moves fast.
+//   Ripples   : rings spread on the floor under fast, low hands.
 //   Breathing : the ambient light slowly shifts colour.
 // ---------------------------------------------------------------------------
 
-const MOTES = 260;
+const MOTES = 120;                 // fewer, so the air isn't busy
 const WAKE_POOL = 260;
 const RINGS = 14;
 const MOTE_RADIUS = 14;
 const HAND_COLORS = [0x4fc3ff, 0xff8a4f];
-const IDLE_RIPPLE_EVERY = 2.5;
+const ACTIVE_SPEED = 0.6;          // m/s: below this, hands are quiet
+const MOVE_THRESHOLD = 0.15;       // m/s: a hand this fast scatters motes
 
 export function createAmbience({ scene, player, hands, hemi }) {
   const tmpA = new THREE.Vector3();
@@ -116,7 +115,6 @@ export function createAmbience({ scene, player, hands, hemi }) {
     r.mesh.visible = true;
   }
 
-  const idleTimer = hands.map((_, i) => i * (IDLE_RIPPLE_EVERY / 2));
   let breath = 0;
 
   function update(dt, time) {
@@ -145,10 +143,8 @@ export function createAmbience({ scene, player, hands, hemi }) {
         if (!h.present) continue;
         tmpB.set(x - h.p.x, y - h.p.y, z - h.p.z);
         const d = tmpB.length();
-        if (h.speed > 0.15) {
-          if (d < 0.6) v.addScaledVector(tmpB.divideScalar(Math.max(d, 1e-3)), 8 * dt);
-        } else if (d < 3) {
-          v.addScaledVector(tmpB, -0.6 * dt);
+        if (h.speed > ACTIVE_SPEED && d < 0.5) {
+          v.addScaledVector(tmpB.divideScalar(Math.max(d, 1e-3)), 6 * dt);
         }
       }
       v.clampLength(0, 1.2);
@@ -163,8 +159,8 @@ export function createAmbience({ scene, player, hands, hemi }) {
       if (dx * dx + dz * dz > MOTE_RADIUS * MOTE_RADIUS) respawnMote(i);
 
       // Gentle glow flicker, a little brighter near hands
-      const flicker = 0.55 + 0.45 * Math.sin(time * 2.2 + ph);
-      const c = 0.35 * flicker;
+      const flicker = 0.7 + 0.3 * Math.sin(time * 1.2 + ph);
+      const c = 0.22 * flicker;
       moteColor[i * 3] = c * 0.6;
       moteColor[i * 3 + 1] = c * 0.9;
       moteColor[i * 3 + 2] = c * 1.0;
@@ -175,7 +171,8 @@ export function createAmbience({ scene, player, hands, hemi }) {
     // Wakes: every hand always gives off light; moving hands give off more
     handInfo.forEach((h, idx) => {
       if (!h.present) return;
-      const rate = 6 + h.speed * 40;
+      // Quiet unless the hand is moving fast
+      const rate = h.speed > ACTIVE_SPEED ? (h.speed - ACTIVE_SPEED) * 30 : 0;
       emitAccum[idx] += rate * dt;
       const color = HAND_COLORS[idx % 2];
       while (emitAccum[idx] >= 1) {
@@ -184,13 +181,8 @@ export function createAmbience({ scene, player, hands, hemi }) {
       }
 
       // Idle ripple every few seconds, or a bigger one when the hand moves low
-      idleTimer[idx] -= dt;
-      if (h.p.y < 1.2 && h.speed > 0.4) {
+      if (h.p.y < 1.2 && h.speed > ACTIVE_SPEED) {
         spawnRipple(h.p.x, h.p.z, color);
-        idleTimer[idx] = IDLE_RIPPLE_EVERY;
-      } else if (idleTimer[idx] <= 0) {
-        spawnRipple(h.p.x, h.p.z, color);
-        idleTimer[idx] = IDLE_RIPPLE_EVERY;
       }
     });
 
