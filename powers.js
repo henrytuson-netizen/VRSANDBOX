@@ -336,7 +336,7 @@ export function createPowers(ctx) {
 
   // ----- Doctor Octopus (robotic arms, see octopus.js) ----------------------
   const octopus = createOctopus({ scene, camera, player, bodies, gridTexture });
-  const spider = createSpider({ scene, player, camera, bodies, sfx });
+  const spider = createSpider({ scene, player, camera, bodies, sfx, octopus });
 
   // ----- Superfly ---------------------------------------------------------
   const flyDir = new THREE.Vector3();
@@ -604,5 +604,5 @@ export function createPowers(ctx) {
   }
 
   refreshHud();
-  return { update, blocksGrab, reset, selectSlot, spiderWebs: () => spider.webCount(), spiderCrawling: () => spider.isCrawling(), webLengths: () => spider.webLengths(), get equipped() { return equipped; } };
+  return { update, blocksGrab, reset, selectSlot, spiderWebs: () => spider.webCount(), spiderCrawling: () => spider.isCrawling(), acroCounts: () => spider.acrobatics(), webLengths: () => spider.webLengths(), get equipped() { return equipped; } };
 }

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createAcrobatics } from './acrobatics.js';
 
 // ---------------------------------------------------------------------------
 // The Spider power: one power, several abilities, each with its own hand pose
@@ -72,7 +73,8 @@ function openPose(p) {
   return f.index && f.middle && f.ring && f.pinky;
 }
 
-export function createSpider({ scene, player, camera, bodies, sfx }) {
+export function createSpider({ scene, player, camera, bodies, sfx, octopus }) {
+  const acro = createAcrobatics({ player, bodies, octopus, sfx });
   // One web per hand: { side, anchor, body, length, line }
   const webs = [];
   const swingVel = new THREE.Vector3();
@@ -264,6 +266,9 @@ export function createSpider({ scene, player, camera, bodies, sfx }) {
       }
     }
 
+    // Acrobatics: hand-plant vaults and sweep jumps
+    acro.update(dt, left, right, blocked);
+
     // Swing while any web is attached
     if (webs.length > 0) updateSwing(dt);
 
@@ -325,6 +330,7 @@ export function createSpider({ scene, player, camera, bodies, sfx }) {
     update,
     isSwinging: () => webs.length > 0,
     isCrawling: () => !!crawl,
+    acrobatics: () => acro.counts(),
     webCount: () => webs.length,
     webLengths: () => webs.map((w) => w.length),
     reset() {

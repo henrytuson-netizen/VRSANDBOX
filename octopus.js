@@ -447,5 +447,10 @@ export function createOctopus({ scene, camera, player, bodies, gridTexture }) {
     vy = 0;
   }
 
-  return { update, updatePlayer, setDeployed, isDeployed, reset };
+  // Lifts the player: used by acrobatics for vaults and jumps
+  function launch(v) {
+    vy = Math.max(vy, v);
+  }
+
+  return { update, updatePlayer, setDeployed, isDeployed, reset, launch };
 }

@@ -103,6 +103,12 @@ export function createSound() {
       noise({ dur: 0.05, gain: g * 0.6, filter: 'lowpass', freq: 1200 });
     },
 
+    // Acrobatics
+    jump: () => {
+      tone({ type: 'sine', from: 200, to: 520, dur: 0.2, gain: 0.12 });
+      noise({ dur: 0.18, gain: 0.12, filter: 'highpass', freq: 1500 });
+    },
+
     // Magic and menus
     menu: () => tone({ type: 'sine', from: 760, dur: 0.05, gain: 0.1 }),
     conjure: () => {

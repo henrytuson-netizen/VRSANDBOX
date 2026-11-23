@@ -1405,4 +1405,4 @@ window.addEventListener('resize', () => {
 });
 
 // Test hook for automated checks (read-only use)
-window.__sandbox = { player, bodies, camera, spiderSense, powers, enemies, TUNING, calibration, settings };
+window.__sandbox = { player, bodies, camera, spiderSense, powers, enemies, TUNING, calibration, settings, hands };
