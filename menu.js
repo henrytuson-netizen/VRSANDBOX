@@ -12,8 +12,8 @@ import * as THREE from 'three';
 // ---------------------------------------------------------------------------
 
 const BUTTON_W = 0.2;
-const BUTTON_H = 0.058;
-const BUTTON_GAP = 0.02;
+const BUTTON_H = 0.046;
+const BUTTON_GAP = 0.012;
 const OPEN_SPEED = 9;        // higher = snappier
 const STAGGER = 0.05;        // seconds between buttons
 const PINCH_ON = 0.03;
@@ -102,6 +102,7 @@ export function createCommandMenu({ scene, camera, hands, keys, commands, sfx })
   const _local = new THREE.Vector3();
   const _pos = new THREE.Vector3();
   const _quat = new THREE.Quaternion();
+  const _lift = new THREE.Vector3(0, 0.22, 0);   // desktop: lift the panel so all commands fit
 
   function runCommand(index) {
     const b = buttons[index];
@@ -155,7 +156,7 @@ export function createCommandMenu({ scene, camera, hands, keys, commands, sfx })
       // Desktop: float the panel in front of the camera, facing it
       wantOpen = true;
       const fwd = camera.getWorldDirection(new THREE.Vector3());
-      panel.position.copy(camera.getWorldPosition(_pos)).addScaledVector(fwd, 0.6);
+      panel.position.copy(camera.getWorldPosition(_pos)).addScaledVector(fwd, 0.6).add(_lift);
       panel.quaternion.copy(camera.quaternion);
     }
     if (wantOpen && target === 0) openAge = 0;
@@ -184,7 +185,7 @@ export function createCommandMenu({ scene, camera, hands, keys, commands, sfx })
     prevPinch = pinchNow;
 
     // Desktop number keys run commands
-    for (const i of desktopRun) runCommand(i);
+    if (panel.visible) for (const i of desktopRun) runCommand(i);
     desktopRun.clear();
 
     // Per-button animation: staggered pop-in, hover lift, click pulse

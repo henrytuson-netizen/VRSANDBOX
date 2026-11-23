@@ -1141,9 +1141,9 @@ const spiderSense = createSpiderSense({
 });
 
 // Bullets are short-lived physics bodies, so Spider-Sense can see them coming
-function fireBullet(origin, vel) {
+function fireBullet(origin, vel, radius = 0.05) {
   const b = makeBody({
-    geometry: new THREE.SphereGeometry(0.05, 8, 6),
+    geometry: new THREE.SphereGeometry(radius, 8, 6),
     color: 0xffd43b,
     x: origin.x,
     z: origin.z,
@@ -1207,6 +1207,10 @@ const menu = createCommandMenu({
     { label: 'Time Warp', color: 0x74c0fc, run: () => setTimeScale(getTimeScale() < 1 ? 1 : 0.25) },
     { label: 'Reset', color: 0xff8787, run: () => resetObjects() },
     { label: 'Rewind', color: 0x9775fa, run: () => requestRewind(2.5) },
+    { label: 'Gunman', color: 0xc92a2a, run: () => enemies.spawn('gunman') },
+    { label: 'Sniper', color: 0x1864ab, run: () => enemies.spawn('sniper') },
+    { label: 'Brute', color: 0x2b8a3e, run: () => enemies.spawn('brute') },
+    { label: 'Clear foes', color: 0x868e96, run: () => enemies.clear() },
   ],
 });
 
@@ -1364,4 +1368,4 @@ window.addEventListener('resize', () => {
 });
 
 // Test hook for automated checks (read-only use)
-window.__sandbox = { player, bodies, camera, spiderSense, powers };
+window.__sandbox = { player, bodies, camera, spiderSense, powers, enemies };
