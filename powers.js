@@ -599,5 +599,5 @@ export function createPowers(ctx) {
   }
 
   refreshHud();
-  return { update, blocksGrab, reset, selectSlot, get equipped() { return equipped; } };
+  return { update, blocksGrab, reset, selectSlot, spiderWebs: () => spider.webCount(), get equipped() { return equipped; } };
 }

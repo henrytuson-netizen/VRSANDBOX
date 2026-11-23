@@ -92,6 +92,9 @@ export function createSpider({ scene, player, camera, bodies }) {
     head.y += 1.6;
     const web = { side, anchor: target.anchor, body: target.body, length: Math.max(1, head.distanceTo(target.anchor)), line: makeLine() };
     webs.push(web);
+    // Launch straight up: a rope can't pull you toward it, so a sideways
+    // push turns into a swing and an upward one gets you airborne
+    swingVel.y += 8;
   }
 
   function releaseWeb(side) {
@@ -230,6 +233,7 @@ export function createSpider({ scene, player, camera, bodies }) {
   return {
     update,
     isSwinging: () => webs.length > 0,
+    webCount: () => webs.length,
     reset() {
       for (const web of [...webs]) releaseWeb(web.side);
       swingVel.set(0, 0, 0);

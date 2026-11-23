@@ -948,9 +948,9 @@ function updateHeadingVectors() {
 // Each hand's speed along the head's forward direction drives walking.
 // Swinging the arms back and forth gives a steady walk; standing still stops.
 // ---------------------------------------------------------------------------
-const ARM_SWING_GAIN = 2.2;      // m/s of walking per m/s of average forward hand speed (was 0.9)
-const ARM_SWING_DEADZONE = 0.2;  // ignore small hand jitter (m/s)
-const ARM_SWING_MAX = 8.0;       // m/s cap, a fast swing runs (was 3)
+const ARM_SWING_GAIN = 1.4;      // m/s of walking per m/s of average forward hand speed
+const ARM_SWING_DEADZONE = 0.6;  // ignore hand jitter and small movements (m/s)
+const ARM_SWING_MAX = 6.0;       // m/s cap, a fast swing runs
 const ARM_SWING_RESPONSE = 10;   // smoothing (higher = snappier)
 let armSpeed = 0;
 
@@ -1172,6 +1172,7 @@ const enemies = createEnemies({
   player,
   camera,
   bodies,
+  hands,
   gridTexture: objectGridTexture,
   fireBullet,
 });
@@ -1351,4 +1352,4 @@ window.addEventListener('resize', () => {
 });
 
 // Test hook for automated checks (read-only use)
-window.__sandbox = { player, bodies, camera, spiderSense };
+window.__sandbox = { player, bodies, camera, spiderSense, powers };
