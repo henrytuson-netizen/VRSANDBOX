@@ -24,10 +24,40 @@ const BALL_LIFE = 1.5;          // s
 const TRAP_TIME = 6;            // s a pinned object stays stuck
 const TRAP_FLICK = 2.6;         // m/s relative to the body
 
+const CRAWL_REACH = 0.28;      // m from a building surface a palm counts as touching it
+const CRAWL_TOUCH = 0.25;      // s a palm must rest there before you stick
+const CRAWL_STILL = 0.8;       // m/s: palm must be nearly still relative to you
+const ZIP_HOLD = 0.2;          // s a fist must be held before the rope reels in
+const ZIP_SPEED = 14;          // m/s the rope shortens
+const ZIP_MIN = 1.5;           // m, closest you can zip to an anchor
+
 const _h = new THREE.Vector3();
 const _a = new THREE.Vector3();
 const _d = new THREE.Vector3();
 const _v = new THREE.Vector3();
+
+// Distance from a point to a box body (0 if inside)
+function boxDistance(p, b) {
+  const dx = Math.max(Math.abs(p.x - b.center.x) - b.half.x, 0);
+  const dy = Math.max(Math.abs(p.y - b.center.y) - b.half.y, 0);
+  const dz = Math.max(Math.abs(p.z - b.center.z) - b.half.z, 0);
+  return Math.hypot(dx, dy, dz);
+}
+
+// The closest building a point is touching, if any
+function nearestSurface(p, list) {
+  let best = null;
+  let bestD = CRAWL_REACH;
+  for (const b of list) {
+    if (!b.isStatic) continue;
+    const d = boxDistance(p, b);
+    if (d < bestD) {
+      bestD = d;
+      best = b;
+    }
+  }
+  return best;
+}
 
 function gunPose(p) {
   const f = p.fingers;
@@ -51,6 +81,11 @@ export function createSpider({ scene, player, camera, bodies }) {
   const balls = [];
   const trapped = new Map();      // body -> seconds left
   let flickCooldown = 0;
+  let crawl = null;               // { side, body } while stuck to a building
+  const touchTime = { left: 0, right: 0 };
+  const zipHold = { left: 0, right: 0 };
+  const prevPlayer = player.position.clone();
+  const playerVel = new THREE.Vector3();
 
   const ballGeometry = new THREE.SphereGeometry(0.06, 12, 8);
   const ballMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
@@ -174,6 +209,55 @@ export function createSpider({ scene, player, camera, bodies }) {
       }
     }
 
+    // Player velocity this frame, so hand motion can be measured relative to the body
+    if (dt > 0) playerVel.copy(player.position).sub(prevPlayer).divideScalar(dt);
+    prevPlayer.copy(player.position);
+
+    // Web zip: hold a fist on a hand with a web and the rope reels in
+    for (const side of ['left', 'right']) {
+      const pose = side === 'left' ? left : right;
+      const web = webs.find((w) => w.side === side);
+      if (web && pose && fistPose(pose)) {
+        zipHold[side] += dt;
+        if (zipHold[side] >= ZIP_HOLD) web.length = Math.max(ZIP_MIN, web.length - ZIP_SPEED * dt);
+      } else {
+        zipHold[side] = 0;
+      }
+    }
+
+    // Wall crawl: an open palm resting on a building sticks you to it.
+    // Pulling the hand along the wall moves you along it.
+    if (crawl) {
+      const pose = crawl.side === 'left' ? left : right;
+      if (!pose || !openPose(pose) || blocked || boxDistance(pose.palmCenter, crawl.body) > CRAWL_REACH * 2) {
+        crawl = null;
+      } else {
+        _v.copy(pose.wristVel).sub(playerVel);
+        player.position.addScaledVector(_v, -dt);
+        if (player.position.y < 0) player.position.y = 0;
+      }
+    } else if (!blocked) {
+      for (const side of ['left', 'right']) {
+        const pose = side === 'left' ? left : right;
+        if (!pose || !openPose(pose) || webs.some((w) => w.side === side)) {
+          touchTime[side] = 0;
+          continue;
+        }
+        const surface = nearestSurface(pose.palmCenter, bodies);
+        const still = _v.copy(pose.wristVel).sub(playerVel).length() < CRAWL_STILL;
+        if (surface && still) {
+          touchTime[side] += dt;
+          if (touchTime[side] >= CRAWL_TOUCH) {
+            crawl = { side, body: surface };
+            touchTime[side] = 0;
+            break;
+          }
+        } else {
+          touchTime[side] = 0;
+        }
+      }
+    }
+
     // Swing while any web is attached
     if (webs.length > 0) updateSwing(dt);
 
@@ -233,7 +317,9 @@ export function createSpider({ scene, player, camera, bodies }) {
   return {
     update,
     isSwinging: () => webs.length > 0,
+    isCrawling: () => !!crawl,
     webCount: () => webs.length,
+    webLengths: () => webs.map((w) => w.length),
     reset() {
       for (const web of [...webs]) releaseWeb(web.side);
       swingVel.set(0, 0, 0);

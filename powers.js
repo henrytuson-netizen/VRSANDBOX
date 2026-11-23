@@ -387,7 +387,7 @@ export function createPowers(ctx) {
 
     octopus.update(dt, time, inputs);
     updateFlight(dt, isFly && powerActive);
-    octopus.updatePlayer(dt, (isFly && powerActive) || spider.isSwinging());
+    octopus.updatePlayer(dt, (isFly && powerActive) || spider.isSwinging() || spider.isCrawling());
     return powerActive;
   }
 
@@ -599,5 +599,5 @@ export function createPowers(ctx) {
   }
 
   refreshHud();
-  return { update, blocksGrab, reset, selectSlot, spiderWebs: () => spider.webCount(), get equipped() { return equipped; } };
+  return { update, blocksGrab, reset, selectSlot, spiderWebs: () => spider.webCount(), spiderCrawling: () => spider.isCrawling(), webLengths: () => spider.webLengths(), get equipped() { return equipped; } };
 }
