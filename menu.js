@@ -51,7 +51,7 @@ function labelTexture(text, color, dim) {
   return tex;
 }
 
-export function createCommandMenu({ scene, camera, hands, keys, commands }) {
+export function createCommandMenu({ scene, camera, hands, keys, commands, sfx }) {
   const panel = new THREE.Group();
   panel.visible = false;
   scene.add(panel);
@@ -106,6 +106,7 @@ export function createCommandMenu({ scene, camera, hands, keys, commands }) {
   function runCommand(index) {
     const b = buttons[index];
     if (!b || b.cmd.disabled) return;
+    sfx.play('menu');
     b.cmd.run();
     b.pulse = 1;
     ringT = 0;

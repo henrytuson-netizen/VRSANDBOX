@@ -72,7 +72,7 @@ function openPose(p) {
   return f.index && f.middle && f.ring && f.pinky;
 }
 
-export function createSpider({ scene, player, camera, bodies }) {
+export function createSpider({ scene, player, camera, bodies, sfx }) {
   // One web per hand: { side, anchor, body, length, line }
   const webs = [];
   const swingVel = new THREE.Vector3();
@@ -127,6 +127,8 @@ export function createSpider({ scene, player, camera, bodies }) {
     head.y += 1.6;
     const web = { side, anchor: target.anchor, body: target.body, length: Math.max(1, head.distanceTo(target.anchor)), line: makeLine() };
     webs.push(web);
+    sfx.play('webShot');
+    sfx.play('webAttach');
     // Launch straight up: a rope can't pull you toward it, so a sideways
     // push turns into a swing and an upward one gets you airborne
     swingVel.y += 8;
@@ -219,7 +221,10 @@ export function createSpider({ scene, player, camera, bodies }) {
       const web = webs.find((w) => w.side === side);
       if (web && pose && fistPose(pose)) {
         zipHold[side] += dt;
-        if (zipHold[side] >= ZIP_HOLD) web.length = Math.max(ZIP_MIN, web.length - ZIP_SPEED * dt);
+        if (zipHold[side] >= ZIP_HOLD) {
+          web.length = Math.max(ZIP_MIN, web.length - ZIP_SPEED * dt);
+          sfx.play('zip');
+        }
       } else {
         zipHold[side] = 0;
       }
@@ -250,6 +255,7 @@ export function createSpider({ scene, player, camera, bodies }) {
           if (touchTime[side] >= CRAWL_TOUCH) {
             crawl = { side, body: surface };
             touchTime[side] = 0;
+            sfx.play('crawl');
             break;
           }
         } else {
@@ -269,6 +275,7 @@ export function createSpider({ scene, player, camera, bodies }) {
         mesh.position.copy(right.palmCenter);
         scene.add(mesh);
         balls.push({ mesh, vel: right.palmFwd.clone().multiplyScalar(BALL_SPEED), life: BALL_LIFE });
+        sfx.play('trapThrow');
         flickCooldown = 0.8;
       }
     }

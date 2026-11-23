@@ -7,6 +7,7 @@ import { createAmbience } from './ambience.js';
 import { createSpiderSense } from './spidersense.js';
 import { createEnemies } from './enemies.js';
 import { cityBlocks } from './city.js';
+import { createSound } from './sound.js';
 
 // ---------------------------------------------------------------------------
 // Renderer + XR
@@ -352,6 +353,7 @@ function resolvePair(a, b) {
   _rel.subVectors(b.vel, a.vel);
   const vn = _rel.dot(n);
   if (vn >= 0) return; // already separating
+  if (-vn > 2) sfx.play('impact', -vn);
 
   // Normal impulse
   const e = (a.bounce !== undefined && b.bounce !== undefined) ? (a.bounce + b.bounce) / 2 : RESTITUTION;
@@ -1056,7 +1058,11 @@ function checkClapReset(dt) {
 }
 
 // Superpowers, power wheel, and gesture spells (see powers.js)
+// Synthesised sound effects (see sound.js)
+const sfx = createSound();
+
 const powers = createPowers({
+  sfx,
   scene,
   camera,
   player,
@@ -1115,6 +1121,7 @@ function spawnObject(x, y, z, dir) {
 }
 
 const tools = createTools({
+  sfx,
   hands,
   keys,
   getTimeScale,
@@ -1173,6 +1180,7 @@ const enemies = createEnemies({
   camera,
   bodies,
   hands,
+  sfx,
   gridTexture: objectGridTexture,
   fireBullet,
 });
@@ -1189,6 +1197,7 @@ function conjureAhead() {
   spawnObject(p.x, 1.2, p.z, null);
 }
 const menu = createCommandMenu({
+  sfx,
   scene,
   camera,
   hands,
@@ -1214,6 +1223,7 @@ const REWIND_SPEED = 2;          // seconds of history replayed per real second
 const history = [];              // { player: Vector3, bodies: [{ id, pos }] }
 let snapshotTimer = 0;
 let rewindCursor = 0;
+let rewindWasActive = false;
 let rewindHeld = false;          // held by a gesture or the Y key
 let rewindTimer = 0;             // seconds requested by the menu
 
@@ -1250,6 +1260,8 @@ function restoreSnapshot(snap) {
 // Steps time backwards by one frame's worth of history. Returns true while rewinding.
 function updateRewind(dt) {
   const active = rewindHeld || rewindTimer > 0;
+  if (active && !rewindWasActive) sfx.play('rewind');
+  rewindWasActive = active;
   if (rewindTimer > 0) rewindTimer = Math.max(0, rewindTimer - dt);
   if (!active) {
     rewindCursor = 0;

@@ -15,7 +15,7 @@ const COOLDOWN = 1.2;       // seconds between uses
 const SLOW_SCALE = 0.25;
 const SPARKS = 48;
 
-export function createTools({ hands, keys, getTimeScale, setTimeScale, spawn, setRewindHeld, camera, player }) {
+export function createTools({ hands, keys, getTimeScale, setTimeScale, spawn, setRewindHeld, camera, player, sfx }) {
   // ----- Sparkle particles --------------------------------------------------
   const positions = new Float32Array(SPARKS * 3);
   const velocities = Array.from({ length: SPARKS }, () => new THREE.Vector3());
@@ -101,11 +101,13 @@ export function createTools({ hands, keys, getTimeScale, setTimeScale, spawn, se
   function conjureAt(pos, dir) {
     spawn(pos, dir);
     burst(pos);
+    sfx.play('conjure');
   }
 
   function toggleTimeWarp() {
     const next = getTimeScale() < 1 ? 1 : SLOW_SCALE;
     setTimeScale(next);
+    sfx.play('timeWarp');
     burst(player.position.clone().add(new THREE.Vector3(0, 1.4, -0.6)));
   }
 

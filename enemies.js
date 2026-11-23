@@ -33,7 +33,7 @@ const BODY_HIT_SPEED = 2;       // m/s a thrown object needs to hurt an enemy
 const HAND_HIT_SPEED = 2;       // m/s a hand needs to punch an enemy
 const HIT_COOLDOWN = 0.4;       // s before the same thing can hurt the same enemy again
 
-export function createEnemies({ scene, player, camera, bodies, hands, gridTexture, fireBullet, onHit }) {
+export function createEnemies({ scene, player, camera, bodies, hands, gridTexture, fireBullet, onHit, sfx }) {
   const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x343a40, map: gridTexture, roughness: 0.6 });
   const armorMaterial = new THREE.MeshStandardMaterial({ color: 0xc92a2a, map: gridTexture, roughness: 0.5 });
   const gunMaterial = new THREE.MeshStandardMaterial({ color: 0x212529, map: gridTexture, metalness: 0.6, roughness: 0.4 });
@@ -138,6 +138,7 @@ export function createEnemies({ scene, player, camera, bodies, hands, gridTextur
     slot.fireTimer = 1 + Math.random() * 2;
     slot.ring.position.set(slot.root.position.x, 0.02, slot.root.position.z);
     slot.ring.visible = true;
+    sfx.play('spawn');
   }
 
   function fire(e) {
@@ -151,6 +152,7 @@ export function createEnemies({ scene, player, camera, bodies, hands, gridTextur
     fireBullet(_muzzle.clone(), _dir.clone().multiplyScalar(BULLET_SPEED));
     e.flash.visible = true;
     e.flashTimer = 0.06;
+    sfx.play('bulletFire');
   }
 
   function damage(e, amount, key, time) {
@@ -163,6 +165,9 @@ export function createEnemies({ scene, player, camera, bodies, hands, gridTextur
       e.stateTime = 0;
       kills++;
       showCounter();
+      sfx.play('enemyDown');
+    } else {
+      sfx.play('enemyHurt');
     }
   }
 
@@ -258,6 +263,7 @@ export function createEnemies({ scene, player, camera, bodies, hands, gridTextur
         b.dead = true;
         hits++;
         showCounter();
+        sfx.play('hitPlayer');
         if (onHit) onHit(hits);
       }
     }

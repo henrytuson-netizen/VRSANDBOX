@@ -157,7 +157,7 @@ function isPinching(rig, pose) {
 
 // ---------------------------------------------------------------------------
 export function createPowers(ctx) {
-  const { scene, camera, player, bodies, hands, keys, renderer, gridTexture, cancelHandGrab } = ctx;
+  const { scene, camera, player, bodies, hands, keys, renderer, gridTexture, cancelHandGrab, sfx } = ctx;
 
   let equipped = null;   // power object or null
   let wheelOpen = false;
@@ -331,7 +331,7 @@ export function createPowers(ctx) {
 
   // ----- Doctor Octopus (robotic arms, see octopus.js) ----------------------
   const octopus = createOctopus({ scene, camera, player, bodies, gridTexture });
-  const spider = createSpider({ scene, player, camera, bodies });
+  const spider = createSpider({ scene, player, camera, bodies, sfx });
 
   // ----- Superfly ---------------------------------------------------------
   const flyDir = new THREE.Vector3();
