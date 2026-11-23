@@ -10,6 +10,8 @@ import { cityBlocks } from './city.js';
 import { createSound } from './sound.js';
 import { createCalibration } from './calibrate.js';
 import { TUNING } from './powers.js';
+import { loadSettings, saveSettings, isComfortMode, COMFORT_PRESET, DEFAULT_SETTINGS } from './settings.js';
+import { createComfort } from './comfort.js';
 
 // ---------------------------------------------------------------------------
 // Renderer + XR
@@ -957,6 +959,7 @@ const ARM_SWING_DEADZONE = 0.6;  // ignore hand jitter and small movements (m/s)
 const ARM_SWING_MAX = 6.0;       // m/s cap, a fast swing runs
 const ARM_SWING_RESPONSE = 10;   // smoothing (higher = snappier)
 let armSpeed = 0;
+let snapLatched = false;   // snap turn: one step per push of the stick
 
 function updateArmSwing(dt) {
   let sum = 0;
@@ -998,6 +1001,17 @@ function updateMovement(dt) {
   if (mag > 1) {
     strafe /= mag;
     forward /= mag;
+  }
+
+  // Snap turn: one 30-degree step per push of the stick, instead of smooth turning
+  if (settings.snapTurn && renderer.xr.isPresenting) {
+    if (Math.abs(turn) > 0.6 && !snapLatched) {
+      player.rotation.y -= Math.sign(turn) * (Math.PI / 6);
+      snapLatched = true;
+    } else if (Math.abs(turn) < 0.3) {
+      snapLatched = false;
+    }
+    turn = 0;
   }
 
   if (turn !== 0) {
@@ -1062,6 +1076,10 @@ function checkClapReset(dt) {
 // Superpowers, power wheel, and gesture spells (see powers.js)
 // Synthesised sound effects (see sound.js)
 const sfx = createSound();
+
+// Comfort settings, saved in this browser (see settings.js)
+const settings = loadSettings();
+const comfort = createComfort({ camera, player, settings });
 
 // Gesture calibration: sets the thresholds from your own hands (see calibrate.js)
 const calibration = createCalibration({ hands, tuning: TUNING, sfx });
@@ -1142,7 +1160,8 @@ scene.add(tools.group);
 const spiderSense = createSpiderSense({
   bodies,
   camera,
-  isEnabled: () => !!powers.equipped && powers.equipped.id === 'spider',
+  isEnabled: () => settings.bulletTime && !!powers.equipped && powers.equipped.id === 'spider',
+  tintEnabled: () => settings.redTint,
 });
 
 // Bullets are short-lived physics bodies, so Spider-Sense can see them coming
@@ -1217,6 +1236,16 @@ const menu = createCommandMenu({
     { label: 'Brute', color: 0x2b8a3e, run: () => enemies.spawn('brute') },
     { label: 'Clear foes', color: 0x868e96, run: () => enemies.clear() },
     { label: 'Calibrate', color: 0x20c997, run: () => calibration.start() },
+    {
+      label: isComfortMode(settings) ? 'Comfort: ON' : 'Comfort: OFF',
+      color: 0x94d82d,
+      run: () => {
+        const on = !isComfortMode(settings);
+        Object.assign(settings, on ? COMFORT_PRESET : DEFAULT_SETTINGS);
+        saveSettings(settings);
+        menu.setLabel(9, on ? 'Comfort: ON' : 'Comfort: OFF', 0x94d82d);
+      },
+    },
   ],
 });
 
@@ -1332,6 +1361,7 @@ function animate() {
   enemies.update(worldDt);
   powers.update(dt, worldDt);
   calibration.update(dt);
+  comfort.update(dt);
   tools.update(dt);
   menu.update(dt);
   ambience.update(worldDt, elapsed);
@@ -1375,4 +1405,4 @@ window.addEventListener('resize', () => {
 });
 
 // Test hook for automated checks (read-only use)
-window.__sandbox = { player, bodies, camera, spiderSense, powers, enemies, TUNING, calibration };
+window.__sandbox = { player, bodies, camera, spiderSense, powers, enemies, TUNING, calibration, settings };

@@ -61,7 +61,7 @@ function edgeTexture() {
   return t;
 }
 
-export function createSpiderSense({ bodies, camera, isEnabled }) {
+export function createSpiderSense({ bodies, camera, isEnabled, tintEnabled = () => true }) {
   // The overlay lives on the camera, so it also shows inside a headset
   const overlay = new THREE.Group();
   overlay.position.set(0, 0, -0.3);
@@ -84,7 +84,8 @@ export function createSpiderSense({ bodies, camera, isEnabled }) {
   function updateOverlay(dt) {
     pulseClock += dt;
     const pulse = 0.75 + 0.25 * Math.sin(pulseClock * 12);
-    vignette.material.opacity = threatLevel * TINT_MAX * pulse;
+    const tint = tintEnabled() ? 1 : 0;
+    vignette.material.opacity = threatLevel * TINT_MAX * pulse * tint;
 
     // Which side the threat is on, relative to where you're facing
     camera.getWorldDirection(_fwd);
@@ -95,7 +96,7 @@ export function createSpiderSense({ bodies, camera, isEnabled }) {
     const side = threatDir.dot(_right);
     const sideAmt = Math.min(1, Math.abs(side) * 2);
     const onRight = side > 0;
-    const strength = threatLevel * sideAmt * TINT_MAX * 1.4 * pulse;
+    const strength = threatLevel * sideAmt * TINT_MAX * 1.4 * pulse * tint;
     rightStrip.material.opacity = onRight ? strength : 0;
     leftStrip.material.opacity = onRight ? 0 : strength;
   }

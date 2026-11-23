@@ -91,8 +91,11 @@ export function createCommandMenu({ scene, camera, hands, keys, commands, sfx })
 
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Tab') { e.preventDefault(); desktopTab = true; }
-    const m = /^Digit([1-9])$/.exec(e.code);
-    if (m) desktopRun.add(Number(m[1]) - 1);
+    const m = /^Digit([0-9])$/.exec(e.code);
+    if (m) {
+      const n = Number(m[1]);
+      desktopRun.add(n === 0 ? 9 : n - 1);   // keys 1-9 are commands 1-9, key 0 is command 10
+    }
   });
 
   const _head = new THREE.Vector3();
@@ -211,5 +214,13 @@ export function createCommandMenu({ scene, camera, hands, keys, commands, sfx })
     }
   }
 
-  return { update, get open() { return target === 1; } };
+  // Changes a button's label, e.g. to show a setting's state
+  function setLabel(index, text, color) {
+    const b = buttons[index];
+    if (!b) return;
+    b.material.map = labelTexture(text, color, false);
+    b.material.needsUpdate = true;
+  }
+
+  return { update, setLabel, get open() { return target === 1; } };
 }
