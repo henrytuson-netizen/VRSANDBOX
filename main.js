@@ -1036,7 +1036,7 @@ function updateMovement(dt) {
 // Loop
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// Hand gesture: clap both hands together to reset the objects
+// Hand gesture: clap both hands together to open gesture calibration
 // Wrists close together and moving toward each other quickly.
 // ---------------------------------------------------------------------------
 const CLAP_DISTANCE = 0.08;   // m between wrists
@@ -1054,22 +1054,29 @@ function wristPosition(rig, out) {
   return true;
 }
 
+let clapPrevDist = null;   // wrist distance last frame, for measuring how fast the hands close
+
 function checkClapReset(dt) {
   clapCooldown = Math.max(0, clapCooldown - dt);
-  if (clapCooldown > 0) return;
 
   const [a, b] = hands;
-  if (!wristPosition(a, _wristA) || !wristPosition(b, _wristB)) return;
+  if (!wristPosition(a, _wristA) || !wristPosition(b, _wristB)) {
+    clapPrevDist = null;
+    return;
+  }
 
   _sep.subVectors(_wristA, _wristB);
   const d = _sep.length();
-  if (d > CLAP_DISTANCE || d < 1e-6) return;
+  const prev = clapPrevDist;
+  clapPrevDist = d;
+  if (clapCooldown > 0 || prev === null || dt <= 0) return;
+  if (d > CLAP_DISTANCE) return;
 
-  // Positive when the hands are closing on each other
-  const closing = -a.vel.clone().sub(b.vel).dot(_sep) / d;
+  // Closing speed from the change in wrist distance: accurate even for a quick clap
+  const closing = (prev - d) / dt;
   if (closing < CLAP_APPROACH) return;
 
-  resetObjects();
+  calibration.start();          // a clap opens calibration; Reset is in the menu and on R
   clapCooldown = CLAP_COOLDOWN;
 }
 
