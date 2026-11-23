@@ -31,9 +31,14 @@ export const POWERS = [
 ];
 
 const CURL_RATIO = 1.6;          // tip-to-wrist / metacarpal-to-wrist; above = extended
-const PINCH_ON = 0.03;           // metres, thumb-index tip distance
-const PINCH_OFF = 0.045;
-const PALM_UP = 0.8;             // palm normal y above this = palm up
+// Gesture thresholds. Calibration (calibrate.js) overwrites these with values
+// measured from your own hands.
+export const TUNING = {
+  pinchOn: 0.03,        // metres, thumb-index tip distance to start a pinch
+  pinchOff: 0.045,      // metres, distance to let go of a pinch
+  thumbExt: 0.07,       // metres, thumb tip from index knuckle counted as extended
+  palmUp: 0.8,          // palm normal y above this counts as palm up
+};
 const WHEEL_HOLD = 0.5;          // seconds the palm must stay up before the wheel opens
 const WHEEL_CLOSE_DELAY = 0.3;             // palm normal y above this = palm up
 const TENTACLE_REACH = 3.2;      // metres
@@ -135,7 +140,7 @@ function readPose(rig, dt) {
   p.fingers.middle = extended('middle');
   p.fingers.ring = extended('ring');
   p.fingers.pinky = extended('pinky');
-  p.fingers.thumb = p.thumbTip.distanceTo(p.idxMeta) > 0.07;
+  p.fingers.thumb = p.thumbTip.distanceTo(p.idxMeta) > TUNING.thumbExt;
 
   return p;
 }
@@ -148,7 +153,7 @@ const isPointing = (p) => p.fingers.index && !p.fingers.middle && !p.fingers.rin
 function isPinching(rig, pose) {
   if (pose) {
     const d = pose.idxTip.distanceTo(pose.thumbTip);
-    rig.pinching = rig.pinching ? d < PINCH_OFF : d < PINCH_ON;
+    rig.pinching = rig.pinching ? d < TUNING.pinchOff : d < TUNING.pinchOn;
   } else {
     rig.pinching = !!rig.selectDown;
   }
@@ -283,7 +288,7 @@ export function createPowers(ctx) {
 
   function updateWheel(left, right, rightPinchEdge, dt) {
     // Open only after the palm has been held up for a moment; close shortly after it drops
-    const palmUp = !!left && left.palmFacing.y > PALM_UP;
+    const palmUp = !!left && left.palmFacing.y > TUNING.palmUp;
     wheelHold = palmUp ? wheelHold + dt : 0;
     wheelAway = palmUp ? 0 : wheelAway + dt;
     if (!wheelOpen && !wheelLatched && wheelHold >= WHEEL_HOLD) wheelOpen = true;

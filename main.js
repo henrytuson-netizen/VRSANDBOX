@@ -8,6 +8,8 @@ import { createSpiderSense } from './spidersense.js';
 import { createEnemies } from './enemies.js';
 import { cityBlocks } from './city.js';
 import { createSound } from './sound.js';
+import { createCalibration } from './calibrate.js';
+import { TUNING } from './powers.js';
 
 // ---------------------------------------------------------------------------
 // Renderer + XR
@@ -1061,6 +1063,9 @@ function checkClapReset(dt) {
 // Synthesised sound effects (see sound.js)
 const sfx = createSound();
 
+// Gesture calibration: sets the thresholds from your own hands (see calibrate.js)
+const calibration = createCalibration({ hands, tuning: TUNING, sfx });
+
 const powers = createPowers({
   sfx,
   scene,
@@ -1211,6 +1216,7 @@ const menu = createCommandMenu({
     { label: 'Sniper', color: 0x1864ab, run: () => enemies.spawn('sniper') },
     { label: 'Brute', color: 0x2b8a3e, run: () => enemies.spawn('brute') },
     { label: 'Clear foes', color: 0x868e96, run: () => enemies.clear() },
+    { label: 'Calibrate', color: 0x20c997, run: () => calibration.start() },
   ],
 });
 
@@ -1325,6 +1331,7 @@ function animate() {
   cleanupBullets();
   enemies.update(worldDt);
   powers.update(dt, worldDt);
+  calibration.update(dt);
   tools.update(dt);
   menu.update(dt);
   ambience.update(worldDt, elapsed);
@@ -1368,4 +1375,4 @@ window.addEventListener('resize', () => {
 });
 
 // Test hook for automated checks (read-only use)
-window.__sandbox = { player, bodies, camera, spiderSense, powers, enemies };
+window.__sandbox = { player, bodies, camera, spiderSense, powers, enemies, TUNING, calibration };
